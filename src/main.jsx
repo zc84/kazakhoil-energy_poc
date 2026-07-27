@@ -33,7 +33,10 @@ const pageTitles = {
   quality: ['Качество данных', 'Загрузка файлов, проверка структуры и замечаний'],
 }
 
-const API_BASE = (import.meta.env?.VITE_API_BASE_URL || 'http://127.0.0.1:8000').replace(/\/$/, '')
+const DEFAULT_API_BASE = import.meta.env.PROD
+  ? 'https://kazakhoil-api.onrender.com'
+  : 'http://127.0.0.1:8000'
+const API_BASE = (import.meta.env?.VITE_API_BASE_URL || DEFAULT_API_BASE).replace(/\/$/, '')
 
 const fmt = n => new Intl.NumberFormat('ru-RU').format(Number(n || 0))
 const fmtValue = n => new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(Number(n || 0))
