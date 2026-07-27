@@ -1,19 +1,43 @@
 services:
   - type: web
-    name: kazakhoil-energy-poc
-    runtime: static
+    name: kazakhoil-api
+    runtime: python
+    rootDir: apps/api
+    buildCommand: pip install -e .
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /healthz
+    envVars:
+      - key: ENERGOPULSE_APP_ENV
+        value: production
+      - key: ENERGOPULSE_DATABASE_URL
+        fromDatabase:
+          name: kazakhoil-postgres
+          property: connectionString
+
+  - type: worker
+    name: kazakhoil-worker
+    runtime: python
+    rootDir: apps/worker
+    buildCommand: pip install -e .
+    startCommand: worker
+    envVars:
+      - key: ENERGOPULSE_APP_ENV
+        value: production
+      - key: ENERGOPULSE_DATABASE_URL
+        fromDatabase:
+          name: kazakhoil-postgres
+          property: connectionString
+
+  - type: static
+    name: kazakhoil-web
+    rootDir: apps/web
     buildCommand: npm install && npm run build
-    staticPublishPath: ./apps/web/dist
-    previews:
-      generation: automatic
-    headers:
-      - path: /*
-        name: X-Frame-Options
-        value: SAMEORIGIN
-      - path: /*
-        name: X-Content-Type-Options
-        value: nosniff
-    routes:
-      - type: rewrite
-        source: /*
-        destination: /index.html
+    staticPublishPath: dist
+    envVars:
+      - key: VITE_API_BASE_URL
+        value: https://kazakhoil-api.onrender.com
+
+databases:
+  - name: kazakhoil-postgres
+    databaseName: energopulse
+    user: energopulse
