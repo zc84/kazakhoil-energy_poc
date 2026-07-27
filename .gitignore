@@ -6,6 +6,7 @@ dist/
 .venv/
 __pycache__/
 *.py[cod]
+*.egg-info/
 data/
 energopulse.db
 apps/api/energopulse.db
