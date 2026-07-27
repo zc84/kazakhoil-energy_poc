@@ -79,7 +79,9 @@ async function resolveApiBase() {
     for (const base of candidates) {
       try {
         const response = await fetch(`${base}/healthz`, { method: 'GET' })
-        if (response.ok) return base
+        if (!response.ok) continue
+        const payload = await response.json().catch(() => null)
+        if (payload?.status === 'ok') return base
       } catch {
         // try next candidate
       }
@@ -94,6 +96,18 @@ async function resolveApiBase() {
 async function apiFetch(path, options) {
   const base = await resolveApiBase()
   return fetch(`${base}${path}`, options)
+}
+
+async function parseJsonResponse(response) {
+  const raw = await response.text()
+  if (!raw) {
+    throw new Error(`HTTP ${response.status}: empty response body`)
+  }
+  try {
+    return JSON.parse(raw)
+  } catch {
+    throw new Error(`HTTP ${response.status}: invalid JSON response`)
+  }
 }
 
 const fmt = n => new Intl.NumberFormat('ru-RU').format(Number(n || 0))
@@ -164,18 +178,21 @@ function friendlyApiError(errorText) {
 }
 
 async function readApiError(response) {
-  let detail = ''
+  const fallback = `HTTP ${response.status}`
+  const raw = await response.text().catch(() => '')
+  if (!raw) return fallback
+
   try {
-    const payload = await response.json()
+    const payload = JSON.parse(raw)
     if (typeof payload?.detail === 'string') {
-      detail = payload.detail
+      return `${fallback}: ${payload.detail}`
     } else if (Array.isArray(payload?.detail)) {
-      detail = payload.detail.map(item => item?.msg || JSON.stringify(item)).join('; ')
+      return `${fallback}: ${payload.detail.map(item => item?.msg || JSON.stringify(item)).join('; ')}`
     }
+    return `${fallback}: ${raw.slice(0, 200)}`
   } catch {
-    // ignore parse errors and fallback to HTTP status
+    return `${fallback}: ${raw.slice(0, 200)}`
   }
-  return detail ? `HTTP ${response.status}: ${detail}` : `HTTP ${response.status}`
 }
 
 function mapBatchStatus(status) {
@@ -205,7 +222,7 @@ function useImportsState() {
     try {
       const response = await apiFetch('/api/v1/imports')
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      const data = await response.json()
+      const data = await parseJsonResponse(response)
       setImports(data)
     } catch (err) {
       setError(err.message || 'Ошибка загрузки')
@@ -366,7 +383,7 @@ function EnergyBusinessDashboard({ hasImports, onOpenQuality }) {
       try {
         const response = await apiFetch('/api/v1/dashboards/energy-business')
         if (!response.ok) throw new Error(`HTTP ${response.status}`)
-        const data = await response.json()
+        const data = await parseJsonResponse(response)
         if (active) setResult(data)
       } catch (err) {
         if (active) setError(err.message || 'Ошибка загрузки')
@@ -575,7 +592,7 @@ function Quality({ importsState, onUploadComplete }) {
     try {
       const response = await apiFetch(`/api/v1/imports/${batchId}/preview`)
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      const previewData = await response.json()
+      const previewData = await parseJsonResponse(response)
       setIssues(previewData.issues)
     } catch (err) {
       if (!silent) {
@@ -607,7 +624,7 @@ function Quality({ importsState, onUploadComplete }) {
         if (!response.ok) {
           throw new Error(await readApiError(response))
         }
-        const batch = await response.json()
+        const batch = await parseJsonResponse(response)
         uploadedBatches.push(batch)
       }
 
