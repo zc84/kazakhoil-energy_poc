@@ -96,6 +96,21 @@ function friendlyApiError(errorText) {
   return 'Не удалось выполнить операцию. Повторите попытку позже.'
 }
 
+async function readApiError(response) {
+  let detail = ''
+  try {
+    const payload = await response.json()
+    if (typeof payload?.detail === 'string') {
+      detail = payload.detail
+    } else if (Array.isArray(payload?.detail)) {
+      detail = payload.detail.map(item => item?.msg || JSON.stringify(item)).join('; ')
+    }
+  } catch {
+    // ignore parse errors and fallback to HTTP status
+  }
+  return detail ? `HTTP ${response.status}: ${detail}` : `HTTP ${response.status}`
+}
+
 function mapBatchStatus(status) {
   if (status === 'published') return 'Опубликован'
   if (status === 'ready_to_publish') return 'В работе'
@@ -524,7 +539,9 @@ function Quality({ importsState, onUploadComplete }) {
         const formData = new FormData()
         formData.append('file', file)
         const response = await fetch(`${API_BASE}/api/v1/imports`, { method: 'POST', body: formData })
-        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        if (!response.ok) {
+          throw new Error(await readApiError(response))
+        }
         const batch = await response.json()
         uploadedBatches.push(batch)
       }
@@ -571,6 +588,7 @@ function Quality({ importsState, onUploadComplete }) {
       </button>
     </div>
     {toast && <div className="toast"><Check/> {toast} <button onClick={()=>setToast('')}><X/></button></div>}
+    {previewError && <div className="toast" style={{ background: '#b42318' }}><AlertTriangle/> {previewError} <button onClick={()=>setPreviewError('')}><X/></button></div>}
     {historyUnavailable && <Card title="Новый файл" className="upload-empty-state">
       <div className="journey-list wide">
         <div><b>1</b><div><strong>Подготовьте файл</strong><p>Используйте файл в формате `.xlsx`, `.xls` или `.csv`.</p></div></div>
