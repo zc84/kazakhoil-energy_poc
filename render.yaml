@@ -28,8 +28,9 @@ services:
           name: kazakhoil-postgres
           property: connectionString
 
-  - type: static
+  - type: web
     name: kazakhoil-web
+    runtime: static
     rootDir: apps/web
     buildCommand: npm install && npm run build
     staticPublishPath: dist
