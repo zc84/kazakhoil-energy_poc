@@ -619,7 +619,7 @@ function Quality({ importsState, onUploadComplete }) {
   </>
 }
 
-function Sidebar({ page, setPage, mobile, setMobile, backendState }) {
+function Sidebar({ page, setPage, mobile, setMobile, backendState, onResetAllData, resetting }) {
   const backendLabel = backendState === 'pending'
     ? 'Connecting'
     : backendState === 'offline'
@@ -629,7 +629,7 @@ function Sidebar({ page, setPage, mobile, setMobile, backendState }) {
   return <aside className={`sidebar ${mobile?'mobile-open':''}`}>
     <div className="logo"><div className="brand-mark"><Zap fill="currentColor"/></div><div><b>ЭнергоПульс</b><span>Казахойл Актобе</span></div><button className="mobile-close" onClick={()=>setMobile(false)}><X/></button></div>
     <nav>{nav.map(group => <div className="nav-group" key={group.section}><small>{group.section}</small>{group.items.map(({id,label,icon:Icon}) => <button key={id} className={page===id?'active':''} onClick={()=>{setPage(id);setMobile(false)}}><Icon/><span>{label}</span></button>)}</div>)}</nav>
-    <div className="sidebar-bottom"><div className={`aws-pill ${backendState}`}><span>API</span><div><b>Import backend</b><small><i/> {backendLabel}</small></div></div><button><LogOut/> Закрыть сессию</button></div>
+    <div className="sidebar-bottom"><div className={`aws-pill ${backendState}`}><span>API</span><div><b>Import backend</b><small><i/> {backendLabel}</small></div></div><button className="export primary" onClick={onResetAllData} disabled={resetting}><AlertTriangle/> {resetting ? 'Очистка…' : 'Очистить всё'}</button><button><LogOut/> Закрыть сессию</button></div>
   </aside>
 }
 
@@ -673,7 +673,7 @@ function AppShell({ dark, setDark }) {
   const title = pageTitles[page]
 
   return <div className="app-shell">
-    <Sidebar page={page} setPage={setPage} mobile={mobile} setMobile={setMobile} backendState={backendState}/>
+    <Sidebar page={page} setPage={setPage} mobile={mobile} setMobile={setMobile} backendState={backendState} onResetAllData={resetAllData} resetting={resetting}/>
     {mobile&&<div className="scrim" onClick={()=>setMobile(false)}/>}
     <div className="main">
       <header className="topbar"><button className="menu-btn" onClick={()=>setMobile(true)}><Menu/></button><div><h1>{title[0]}</h1><p>{title[1]}</p></div><div className="top-actions"><button className="search-btn"><Search/><span>Поиск</span><kbd>⌘ K</kbd></button><button className="search-btn" onClick={resetAllData} disabled={resetting}>{resetting ? 'Очистка…' : 'Сброс данных'}</button><button className="theme-btn" onClick={()=>setDark(!dark)}>{dark?<Sun/>:<Moon/>}</button><button className="bell"><Bell/><i/></button><div className="profile"><span>LO</span><div><b>Локальная сессия</b><small>frontend theme only</small></div><ChevronDown/></div></div></header>
