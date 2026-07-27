@@ -15,6 +15,8 @@ services:
         fromDatabase:
           name: kazakhoil-postgres
           property: connectionString
+      - key: ENERGOPULSE_STORAGE_ROOT
+        value: /tmp/energopulse
 
   - type: worker
     name: kazakhoil-worker
@@ -29,6 +31,8 @@ services:
         fromDatabase:
           name: kazakhoil-postgres
           property: connectionString
+      - key: ENERGOPULSE_STORAGE_ROOT
+        value: /tmp/energopulse
 
   - type: web
     name: kazakhoil-web
