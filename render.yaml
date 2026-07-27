@@ -2,8 +2,8 @@ services:
   - type: web
     name: kazakhoil-energy-analytics
     runtime: static
-    buildCommand: pnpm install --frozen-lockfile && pnpm run build
-    staticPublishPath: ./dist
+    buildCommand: npm ci && npm run build
+    staticPublishPath: ./apps/web/dist
     previews:
       generation: automatic
     headers:
