@@ -48,8 +48,11 @@ function deriveRenderApiCandidates() {
   const names = new Set([
     hostname,
     hostname.replace('-poc.onrender.com', '-api.onrender.com'),
+    hostname.replace('-energy-poc.onrender.com', '-api.onrender.com'),
+    hostname.replace('-energy-poc.onrender.com', '-energy-api.onrender.com'),
     hostname.replace('-web.onrender.com', '-api.onrender.com'),
     hostname.replace('-frontend.onrender.com', '-api.onrender.com'),
+    'kazakhoil-api.onrender.com',
   ])
 
   return Array.from(names).map(name => `${protocol}//${name}`)
