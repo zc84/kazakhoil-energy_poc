@@ -127,7 +127,6 @@ function useImportsState() {
       setImports(data)
     } catch (err) {
       setError(err.message || 'Ошибка загрузки')
-      setImports([])
     } finally {
       setLoading(false)
     }
@@ -536,7 +535,7 @@ function Quality({ importsState, onUploadComplete }) {
         : `Загружено файлов: ${uploadedBatches.length}`
       )
       mergeImports(uploadedBatches)
-      await reload()
+      await reload().catch(() => {})
       if (lastBatch?.id) {
         onUploadComplete(lastBatch.id)
       }
