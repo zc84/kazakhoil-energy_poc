@@ -33,10 +33,17 @@ const pageTitles = {
   quality: ['Качество данных', 'Загрузка файлов, проверка структуры и замечаний'],
 }
 
-const DEFAULT_API_BASE = import.meta.env.PROD
-  ? 'https://kazakhoil-api.onrender.com'
-  : 'http://127.0.0.1:8000'
-const API_BASE = (import.meta.env?.VITE_API_BASE_URL || DEFAULT_API_BASE).replace(/\/$/, '')
+const PROD_API_BASE = import.meta.env?.VITE_API_BASE_URL
+const LOCAL_API_BASE = 'http://127.0.0.1:8000'
+const API_BASE = (import.meta.env.PROD
+  ? (PROD_API_BASE || '')
+  : (import.meta.env?.VITE_API_BASE_URL || LOCAL_API_BASE)
+).replace(/\/$/, '')
+
+if (import.meta.env.PROD && !API_BASE) {
+  // eslint-disable-next-line no-console
+  console.error('VITE_API_BASE_URL is not configured for production build')
+}
 
 const fmt = n => new Intl.NumberFormat('ru-RU').format(Number(n || 0))
 const fmtValue = n => new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(Number(n || 0))
@@ -93,10 +100,19 @@ function ReadinessCard({ icon: Icon, eyebrow, title, text, tone = 'green' }) {
 
 function friendlyApiError(errorText) {
   if (!errorText) return ''
+  if (/API base URL is not configured/i.test(errorText)) {
+    return 'API URL не настроен. Проверьте VITE_API_BASE_URL в Render.'
+  }
   if (/Failed to fetch|NetworkError|Load failed|fetch/i.test(errorText)) {
     return 'История загрузок временно недоступна.'
   }
   return 'Не удалось выполнить операцию. Повторите попытку позже.'
+}
+
+function ensureApiBaseConfigured() {
+  if (!API_BASE) {
+    throw new Error('API base URL is not configured (VITE_API_BASE_URL)')
+  }
 }
 
 async function readApiError(response) {
@@ -139,6 +155,7 @@ function useImportsState() {
     setLoading(true)
     setError('')
     try {
+      ensureApiBaseConfigured()
       const response = await fetch(`${API_BASE}/api/v1/imports`)
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const data = await response.json()
@@ -298,6 +315,17 @@ function EnergyBusinessDashboard({ hasImports, onOpenQuality }) {
     let active = true
     setLoading(true)
     setError('')
+    try {
+      ensureApiBaseConfigured()
+    } catch (err) {
+      if (active) {
+        setError(err.message || 'Ошибка загрузки')
+        setLoading(false)
+      }
+      return () => {
+        active = false
+      }
+    }
     fetch(`${API_BASE}/api/v1/dashboards/energy-business`)
       .then(response => {
         if (!response.ok) throw new Error(`HTTP ${response.status}`)
@@ -511,6 +539,7 @@ function Quality({ importsState, onUploadComplete }) {
     setSelectedBatchId(batchId)
     setPreviewError('')
     try {
+      ensureApiBaseConfigured()
       const response = await fetch(`${API_BASE}/api/v1/imports/${batchId}/preview`)
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const previewData = await response.json()
@@ -537,6 +566,7 @@ function Quality({ importsState, onUploadComplete }) {
     setUploading(true)
     setPreviewError('')
     try {
+      ensureApiBaseConfigured()
       const uploadedBatches = []
       for (const file of files) {
         const formData = new FormData()
@@ -651,6 +681,7 @@ function AppShell({ dark, setDark }) {
 
     setResetting(true)
     try {
+      ensureApiBaseConfigured()
       const response = await fetch(`${API_BASE}/api/v1/admin/reset`, { method: 'POST' })
       if (!response.ok) {
         throw new Error(await readApiError(response))
