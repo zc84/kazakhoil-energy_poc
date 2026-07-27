@@ -4,5 +4,9 @@ dist/
 .codex/
 *.log
 .venv/
+__pycache__/
+*.py[cod]
+data/
+energopulse.db
 apps/api/energopulse.db
 apps/api/data/
