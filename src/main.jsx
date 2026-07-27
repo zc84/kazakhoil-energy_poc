@@ -35,14 +35,65 @@ const pageTitles = {
 
 const PROD_API_BASE = import.meta.env?.VITE_API_BASE_URL
 const LOCAL_API_BASE = 'http://127.0.0.1:8000'
-const API_BASE = (import.meta.env.PROD
-  ? (PROD_API_BASE || '')
-  : (import.meta.env?.VITE_API_BASE_URL || LOCAL_API_BASE)
-).replace(/\/$/, '')
 
-if (import.meta.env.PROD && !API_BASE) {
-  // eslint-disable-next-line no-console
-  console.error('VITE_API_BASE_URL is not configured for production build')
+function toBaseUrl(value) {
+  return String(value || '').replace(/\/$/, '')
+}
+
+function deriveRenderApiCandidates() {
+  if (typeof window === 'undefined') return []
+  const { hostname, protocol } = window.location
+  if (!hostname.endsWith('.onrender.com')) return []
+
+  const names = new Set([
+    hostname,
+    hostname.replace('-poc.onrender.com', '-api.onrender.com'),
+    hostname.replace('-web.onrender.com', '-api.onrender.com'),
+    hostname.replace('-frontend.onrender.com', '-api.onrender.com'),
+  ])
+
+  return Array.from(names).map(name => `${protocol}//${name}`)
+}
+
+function getApiCandidates() {
+  const explicit = toBaseUrl(import.meta.env.PROD
+    ? PROD_API_BASE
+    : (import.meta.env?.VITE_API_BASE_URL || LOCAL_API_BASE))
+  const candidates = [explicit, ...deriveRenderApiCandidates()]
+    .map(toBaseUrl)
+    .filter(Boolean)
+  return Array.from(new Set(candidates))
+}
+
+let resolvedApiBasePromise
+
+async function resolveApiBase() {
+  if (resolvedApiBasePromise) return resolvedApiBasePromise
+
+  resolvedApiBasePromise = (async () => {
+    const candidates = getApiCandidates()
+    if (!candidates.length) {
+      throw new Error('API base URL is not configured (VITE_API_BASE_URL)')
+    }
+
+    for (const base of candidates) {
+      try {
+        const response = await fetch(`${base}/healthz`, { method: 'GET' })
+        if (response.ok) return base
+      } catch {
+        // try next candidate
+      }
+    }
+
+    throw new Error(`API is unreachable. Checked: ${candidates.join(', ')}`)
+  })()
+
+  return resolvedApiBasePromise
+}
+
+async function apiFetch(path, options) {
+  const base = await resolveApiBase()
+  return fetch(`${base}${path}`, options)
 }
 
 const fmt = n => new Intl.NumberFormat('ru-RU').format(Number(n || 0))
@@ -103,16 +154,13 @@ function friendlyApiError(errorText) {
   if (/API base URL is not configured/i.test(errorText)) {
     return 'API URL не настроен. Проверьте VITE_API_BASE_URL в Render.'
   }
+  if (/API is unreachable/i.test(errorText)) {
+    return 'API недоступен. Проверьте, что backend сервис запущен на Render.'
+  }
   if (/Failed to fetch|NetworkError|Load failed|fetch/i.test(errorText)) {
     return 'История загрузок временно недоступна.'
   }
   return 'Не удалось выполнить операцию. Повторите попытку позже.'
-}
-
-function ensureApiBaseConfigured() {
-  if (!API_BASE) {
-    throw new Error('API base URL is not configured (VITE_API_BASE_URL)')
-  }
 }
 
 async function readApiError(response) {
@@ -155,8 +203,7 @@ function useImportsState() {
     setLoading(true)
     setError('')
     try {
-      ensureApiBaseConfigured()
-      const response = await fetch(`${API_BASE}/api/v1/imports`)
+      const response = await apiFetch('/api/v1/imports')
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const data = await response.json()
       setImports(data)
@@ -315,31 +362,18 @@ function EnergyBusinessDashboard({ hasImports, onOpenQuality }) {
     let active = true
     setLoading(true)
     setError('')
-    try {
-      ensureApiBaseConfigured()
-    } catch (err) {
-      if (active) {
-        setError(err.message || 'Ошибка загрузки')
-        setLoading(false)
-      }
-      return () => {
-        active = false
-      }
-    }
-    fetch(`${API_BASE}/api/v1/dashboards/energy-business`)
-      .then(response => {
+    ;(async () => {
+      try {
+        const response = await apiFetch('/api/v1/dashboards/energy-business')
         if (!response.ok) throw new Error(`HTTP ${response.status}`)
-        return response.json()
-      })
-      .then(data => {
+        const data = await response.json()
         if (active) setResult(data)
-      })
-      .catch(err => {
+      } catch (err) {
         if (active) setError(err.message || 'Ошибка загрузки')
-      })
-      .finally(() => {
+      } finally {
         if (active) setLoading(false)
-      })
+      }
+    })()
 
     return () => {
       active = false
@@ -539,8 +573,7 @@ function Quality({ importsState, onUploadComplete }) {
     setSelectedBatchId(batchId)
     setPreviewError('')
     try {
-      ensureApiBaseConfigured()
-      const response = await fetch(`${API_BASE}/api/v1/imports/${batchId}/preview`)
+      const response = await apiFetch(`/api/v1/imports/${batchId}/preview`)
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const previewData = await response.json()
       setIssues(previewData.issues)
@@ -566,12 +599,11 @@ function Quality({ importsState, onUploadComplete }) {
     setUploading(true)
     setPreviewError('')
     try {
-      ensureApiBaseConfigured()
       const uploadedBatches = []
       for (const file of files) {
         const formData = new FormData()
         formData.append('file', file)
-        const response = await fetch(`${API_BASE}/api/v1/imports`, { method: 'POST', body: formData })
+        const response = await apiFetch('/api/v1/imports', { method: 'POST', body: formData })
         if (!response.ok) {
           throw new Error(await readApiError(response))
         }
@@ -681,8 +713,7 @@ function AppShell({ dark, setDark }) {
 
     setResetting(true)
     try {
-      ensureApiBaseConfigured()
-      const response = await fetch(`${API_BASE}/api/v1/admin/reset`, { method: 'POST' })
+      const response = await apiFetch('/api/v1/admin/reset', { method: 'POST' })
       if (!response.ok) {
         throw new Error(await readApiError(response))
       }
