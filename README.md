@@ -96,6 +96,7 @@ docker compose -f infra/compose.yaml up
 
 ## Документация
 
+- [docs/USER_GUIDE.md](docs/USER_GUIDE.md) — практическое руководство пользователя: запуск, загрузка файлов, просмотр результатов, очистка данных.
 - [docs/MVP_IMPLEMENTATION_PLAN.md](docs/MVP_IMPLEMENTATION_PLAN.md) — полный технический план MVP, модель данных, pipeline и этапы.
 - [docs/BUSINESS_VALUE_PLAN.md](docs/BUSINESS_VALUE_PLAN.md) — бизнес-метрики, KPI и правила операционного экрана.
 - [docs/data-contract.md](docs/data-contract.md) — контракт данных.
