@@ -55,11 +55,22 @@ function deriveRenderApiCandidates() {
   return Array.from(names).map(name => `${protocol}//${name}`)
 }
 
+function deriveLocalApiCandidates() {
+  if (typeof window === 'undefined') return []
+  const { hostname } = window.location
+  if (!['localhost', '127.0.0.1', '::1'].includes(hostname)) return []
+  return ['http://127.0.0.1:8000', 'http://localhost:8000']
+}
+
 function getApiCandidates() {
   const explicit = toBaseUrl(import.meta.env.PROD
     ? PROD_API_BASE
     : (import.meta.env?.VITE_API_BASE_URL || LOCAL_API_BASE))
-  const candidates = [explicit, ...deriveRenderApiCandidates()]
+  const candidates = [
+    explicit,
+    ...deriveRenderApiCandidates(),
+    ...deriveLocalApiCandidates(),
+  ]
     .map(toBaseUrl)
     .filter(Boolean)
   return Array.from(new Set(candidates))
