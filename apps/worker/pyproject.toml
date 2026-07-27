@@ -1,0 +1,13 @@
+[project]
+name = "kazakhoil-energy-worker"
+version = "0.1.0"
+description = "Background jobs for EnergoPulse MVP"
+requires-python = ">=3.11"
+dependencies = []
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project.scripts]
+worker = "app.main:main"
