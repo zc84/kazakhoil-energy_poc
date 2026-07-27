@@ -636,9 +636,31 @@ function Sidebar({ page, setPage, mobile, setMobile, backendState }) {
 function AppShell({ dark, setDark }) {
   const [page, setPage] = useState('overview')
   const [mobile, setMobile] = useState(false)
+  const [resetting, setResetting] = useState(false)
   const importsState = useImportsState()
   const backendState = importsState.loading ? 'pending' : importsState.error ? 'offline' : 'live'
   const openResult = () => setPage('consumption')
+
+  const resetAllData = async () => {
+    if (resetting) return
+    const confirmed = window.confirm('Удалить все загрузки, результаты проверки и raw-файлы? Это действие необратимо.')
+    if (!confirmed) return
+
+    setResetting(true)
+    try {
+      const response = await fetch(`${API_BASE}/api/v1/admin/reset`, { method: 'POST' })
+      if (!response.ok) {
+        throw new Error(await readApiError(response))
+      }
+      await importsState.reload()
+      setPage('quality')
+      window.alert('Данные очищены. База и raw-файлы сброшены.')
+    } catch (err) {
+      window.alert(err?.message || 'Не удалось очистить данные')
+    } finally {
+      setResetting(false)
+    }
+  }
   const screens = {
     overview: <Overview onOpenQuality={()=>setPage('quality')} onOpenResult={openResult} importsState={importsState}/>,
     consumption: <EnergyBusinessDashboard hasImports={importsState.imports.length > 0} onOpenQuality={()=>setPage('quality')}/>,
@@ -654,7 +676,7 @@ function AppShell({ dark, setDark }) {
     <Sidebar page={page} setPage={setPage} mobile={mobile} setMobile={setMobile} backendState={backendState}/>
     {mobile&&<div className="scrim" onClick={()=>setMobile(false)}/>}
     <div className="main">
-      <header className="topbar"><button className="menu-btn" onClick={()=>setMobile(true)}><Menu/></button><div><h1>{title[0]}</h1><p>{title[1]}</p></div><div className="top-actions"><button className="search-btn"><Search/><span>Поиск</span><kbd>⌘ K</kbd></button><button className="theme-btn" onClick={()=>setDark(!dark)}>{dark?<Sun/>:<Moon/>}</button><button className="bell"><Bell/><i/></button><div className="profile"><span>LO</span><div><b>Локальная сессия</b><small>frontend theme only</small></div><ChevronDown/></div></div></header>
+      <header className="topbar"><button className="menu-btn" onClick={()=>setMobile(true)}><Menu/></button><div><h1>{title[0]}</h1><p>{title[1]}</p></div><div className="top-actions"><button className="search-btn"><Search/><span>Поиск</span><kbd>⌘ K</kbd></button><button className="search-btn" onClick={resetAllData} disabled={resetting}>{resetting ? 'Очистка…' : 'Сброс данных'}</button><button className="theme-btn" onClick={()=>setDark(!dark)}>{dark?<Sun/>:<Moon/>}</button><button className="bell"><Bell/><i/></button><div className="profile"><span>LO</span><div><b>Локальная сессия</b><small>frontend theme only</small></div><ChevronDown/></div></div></header>
       <main className="content">{screens[page]}</main>
     </div>
   </div>

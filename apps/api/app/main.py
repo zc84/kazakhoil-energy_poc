@@ -1,8 +1,9 @@
 from datetime import datetime, timezone
+import shutil
 
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, selectinload
 
 from .config import get_settings
@@ -56,6 +57,36 @@ def startup() -> None:
 @app.get("/healthz", tags=["system"])
 def healthcheck() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.post("/api/v1/admin/reset", tags=["admin"])
+def reset_all_data(db: Session = Depends(get_db)) -> dict[str, object]:
+    deleted_issues = db.execute(delete(ValidationIssue)).rowcount or 0
+    deleted_rows = db.execute(delete(StagingRow)).rowcount or 0
+    deleted_files = db.execute(delete(ImportFile)).rowcount or 0
+    deleted_batches = db.execute(delete(ImportBatch)).rowcount or 0
+    db.commit()
+
+    raw_imports_dir = settings.storage_root / "raw-imports"
+    removed_raw_files = 0
+    if raw_imports_dir.exists():
+        for item in raw_imports_dir.iterdir():
+            if item.is_file():
+                item.unlink(missing_ok=True)
+                removed_raw_files += 1
+            elif item.is_dir():
+                shutil.rmtree(item, ignore_errors=True)
+
+    return {
+        "status": "ok",
+        "deleted": {
+            "batches": deleted_batches,
+            "files": deleted_files,
+            "staging_rows": deleted_rows,
+            "validation_issues": deleted_issues,
+            "raw_files": removed_raw_files,
+        },
+    }
 
 
 @app.post("/api/v1/imports", response_model=ImportBatchRead, tags=["imports"])
