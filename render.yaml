@@ -9,6 +9,8 @@ services:
     envVars:
       - key: ENERGOPULSE_APP_ENV
         value: production
+      - key: ENERGOPULSE_CORS_ALLOW_ORIGINS
+        value: https://kazakhoil-web.onrender.com,http://localhost:5173,http://127.0.0.1:5173
       - key: ENERGOPULSE_DATABASE_URL
         fromDatabase:
           name: kazakhoil-postgres
