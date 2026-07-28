@@ -1162,17 +1162,27 @@ function ForecastPage({ hasImports }) {
           <span/> {sourcePeriodLabel}: {mln(forecast.source_total_kwh)} → {forecastPeriodLabel}: {mln(mainScenario?.value)} млн кВт·ч · {signedPercent(forecast.expected_change_pct)}
         </div>}
       >
-        <div className="forecast-chart-legend">
-          <span className="actual"><i/> Факт потребления</span>
-          <span className="forecast"><i/> Прогноз потребления</span>
-          <span className="weather-actual"><i/> Температура · факт</span>
-          <span className="weather-forecast"><i/> Температура · прогноз</span>
-          <span className="anomaly"><i/> Аномальная погода</span>
-        </div>
         <div className="energy-chart forecast-chart">
           <Suspense fallback={<div className="result-chart-fallback">Строим прогноз…</div>}>
             <EnergyBusinessCharts kind="forecast" data={combinedSeries}/>
           </Suspense>
+        </div>
+        <div className="forecast-chart-legend">
+          <div className="forecast-legend-group energy">
+            <small>Потребление · левая шкала, кВт·ч</small>
+            <div>
+              <span className="actual"><i/> Факт</span>
+              <span className="forecast"><i/> Прогноз</span>
+            </div>
+          </div>
+          <div className="forecast-legend-group weather">
+            <small>Погода · правая шкала, °C</small>
+            <div>
+              <span className="weather-actual"><i/> Температура · факт</span>
+              <span className="weather-forecast"><i/> Температура · прогноз</span>
+              <span className="anomaly"><i/> Аномалия</span>
+            </div>
+          </div>
         </div>
         <div className="load-signal-summary wide">
           <div><small>ОЖИДАЕМЫЙ ДИАПАЗОН</small><b>{mln(forecast.forecast_low_kwh)}–{mln(forecast.forecast_high_kwh)} млн кВт·ч</b></div>
