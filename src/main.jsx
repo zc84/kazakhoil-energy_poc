@@ -1155,11 +1155,11 @@ function ForecastPage({ hasImports }) {
         </div>}
       >
         <div className="forecast-chart-legend">
-          <span className="actual"><i/> Нагрузка · факт</span>
-          <span className="forecast"><i/> Нагрузка · прогноз</span>
+          <span className="actual"><i/> Факт потребления</span>
+          <span className="forecast"><i/> Прогноз потребления</span>
           <span className="weather-actual"><i/> Температура · факт</span>
-          <span className="weather-forecast"><i/> Температура · прогноз API</span>
-          <span className="anomaly"><i/> Погодная аномалия</span>
+          <span className="weather-forecast"><i/> Температура · прогноз</span>
+          <span className="anomaly"><i/> Аномальная погода</span>
         </div>
         <div className="energy-chart forecast-chart">
           <Suspense fallback={<div className="result-chart-fallback">Строим прогноз…</div>}>
