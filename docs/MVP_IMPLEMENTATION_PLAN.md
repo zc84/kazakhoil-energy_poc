@@ -564,98 +564,100 @@ UI requirements:
 
 ### Этап 0 — metric contract и golden data, 3–5 рабочих дней
 
-- подтвердить иерархию;
-- определить station/substation mappings;
-- утвердить flow roles и billable boundary;
-- утвердить тарифные даты и округление;
-- утвердить метод небаланса;
-- разобрать 11 formula mismatches и ручные значения;
-- подготовить golden dataset.
+- [ ] подтвердить иерархию;
+- [ ] определить station/substation mappings;
+- [ ] утвердить flow roles и billable boundary;
+- [ ] утвердить тарифные даты и округление;
+- [ ] утвердить метод небаланса;
+- [ ] разобрать 11 formula mismatches и ручные значения;
+- [ ] подготовить golden dataset.
 
 Критерий: заказчик подписал `metric-dictionary.md` и контрольные суммы.
 
 ### Этап 1 — foundation, 3–5 дней
 
-- done — целевая структура репозитория;
-- done — TypeScript frontend baseline;
-- done — FastAPI skeleton;
-- PostgreSQL, migrations, object storage, queue/worker;
-- done — Docker Compose;
-- CI: lint, tests, build;
-- done — environment/secrets policy.
+- [x] целевая структура репозитория;
+- [x] TypeScript frontend baseline;
+- [x] FastAPI skeleton;
+- [x] PostgreSQL + object storage + Redis + worker в локальном Docker Compose baseline;
+- [x] migrations (Alembic) baseline: инициализирован `alembic/`, настроен `env.py` на `app.config`, создан и проверен `initial_schema` migration;
+- [ ] полноценная queue/worker orchestration;
+- [ ] CI: lint, tests, build;
+- [x] Docker Compose;
+- [x] environment/secrets policy.
 
 Критерий: один command поднимает web/api/worker/db/storage; health checks зелёные.
 
 ### Этап 2 — data model, auth и справочники, 5–7 дней
 
-- done — schema из раздела 7 для import/data foundation (`import_batches`, `import_files`, `staging_rows`, `validation_issues`);
-- users/roles;
-- station/substation/assets/meters/tariffs;
-- aliases и mappings;
-- audit log;
-- seed approved tariff `59,87` с согласованной датой.
+- [x] schema из раздела 7 для import/data foundation (`import_batches`, `import_files`, `staging_rows`, `validation_issues`);
+- [ ] users/roles;
+- [ ] station/substation/assets/meters/tariffs;
+- [ ] aliases и mappings;
+- [ ] audit log;
+- [ ] seed approved tariff `59,87` с согласованной датой.
 
 Критерий: миграции воспроизводимы; CRUD и role matrix покрыты тестами.
 
 ### Этап 3 — ingestion и validation, 8–12 дней
 
-- done — upload/status endpoints;
-- done — immutable raw storage;
-- done — baseline adapters for `.csv`, `.xlsx`, `.xls`;
-- normalization через `Decimal`;
-- done — validation rules skeleton;
-- done — import preview/issues;
-- done — transactional publish baseline;
-- idempotency/versioning;
-- export validation report.
+- [x] upload/status endpoints;
+- [x] immutable raw storage;
+- [x] baseline adapters for `.csv`, `.xlsx`, `.xls`;
+- [x] normalization через `Decimal`;
+- [x] validation rules skeleton;
+- [x] import preview/issues;
+- [x] transactional publish baseline;
+- [x] idempotency/versioning;
+- [x] export validation report.
 
 Критерий: все 6 клиентских файлов проходят pipeline; ни одна строка не исчезает без recorded reason; ошибки ×1000 и blank-reading выявляются автоматически.
 
 ### Этап 4 — semantic layer и API дэшбордов, 6–8 дней
 
-- approved metric queries;
-- tariff calculation;
-- balance facts;
-- filters;
-- monthly/daily/anomaly DTO;
-- indexes/materialized aggregates при необходимости;
-- reconciliation tests.
+- [ ] approved metric queries;
+- [ ] tariff calculation;
+- [ ] balance facts;
+- [x] filters (baseline): query params `station_id/substation_id/date_from/date_to` добавлены в `monthly/daily/anomalies/energy-business`; добавлен `GET /api/v1/filters`; вынесен общий helper period-range filtering для консистентного поведения;
+- [x] monthly/daily/anomaly DTO (baseline): в `meta.filters` возвращаются применённые фильтры для синхронизации URL/UI и API snapshot;
+- [ ] indexes/materialized aggregates при необходимости;
+- [ ] reconciliation tests.
 
 Критерий: API totals совпадают с golden dataset при любом сочетании фильтров.
 
 ### Этап 5 — anomaly и forecast, 5–8 дней
 
-- rule engine;
-- anomaly workflow;
-- forecast baselines/backtest;
-- April 2026 run;
-- deterministic insight;
-- сохранение model/run metadata.
+- [ ] rule engine;
+- [ ] anomaly workflow;
+- [ ] forecast baselines/backtest;
+- [ ] April 2026 run;
+- [ ] deterministic insight;
+- [ ] сохранение model/run metadata.
 
 Критерий: найденные дефекты из аудита воспроизводятся как anomalies; forecast не использует данные позже 2026-03-31.
 
 ### Этап 6 — frontend MVP, 8–12 дней
 
-- декомпозиция `src/main.jsx`;
-- real auth;
-- import wizard;
-- 3 dashboard pages;
-- фильтры и URL state;
-- tables/drill-down/export;
-- quality states;
-- generated API client.
+- [ ] декомпозиция `src/main.jsx`;
+- [ ] real auth;
+- [ ] import wizard;
+- [ ] 3 dashboard pages;
+- [ ] фильтры и URL state;
+- [ ] tables/drill-down/export;
+- [ ] quality states;
+- [ ] generated API client.
 
 Критерий: полный E2E upload → publish → filter → drill-down работает без mock data.
 
 ### Этап 7 — hardening, UAT и release, 5–7 дней
 
-- нагрузочный smoke test;
-- backup/restore drill;
-- security checklist;
-- observability/logging;
-- UAT fixes;
-- runbook и user guide;
-- production deployment.
+- [ ] нагрузочный smoke test;
+- [ ] backup/restore drill;
+- [ ] security checklist;
+- [ ] observability/logging;
+- [ ] UAT fixes;
+- [ ] runbook и user guide;
+- [ ] production deployment.
 
 Критерий: UAT sign-off, restore проверен, release rollback задокументирован.
 

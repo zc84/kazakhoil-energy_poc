@@ -78,6 +78,7 @@ class EnergyBusinessDashboardRead(BaseModel):
     external_groups: list[dict[str, object]]
     top_external_consumers: list[dict[str, object]]
     reconciliation: list[dict[str, object]]
+    forecast: dict[str, object]
     data_quality: dict[str, object]
     insight: str
     warnings: list[str]

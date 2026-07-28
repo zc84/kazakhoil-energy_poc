@@ -1,9 +1,9 @@
 import React, { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import {
-  AlertTriangle, ArrowRight, Bell, CalendarDays, Check, ChevronDown,
+  AlertTriangle, ArrowRight, CalendarDays, Check, ChevronDown,
   Database, Download, Factory, FileCheck2, FileSpreadsheet, Filter, LayoutDashboard,
-  LogOut, Menu, Moon, Search, Sun, Upload, X, Zap,
+  LogOut, Maximize2, Menu, Moon, Sun, TrendingDown, TrendingUp, Upload, X, Zap,
 } from 'lucide-react'
 import './styles.css'
 
@@ -13,24 +13,22 @@ const nav = [
   { section: 'ОБЗОР', items: [{ id: 'overview', label: 'Главная', icon: LayoutDashboard }] },
   { section: 'АНАЛИТИКА', items: [
     { id: 'consumption', label: 'Энергобаланс', icon: Zap },
-    { id: 'peaks', label: 'Пики и лимиты', icon: Zap },
-    { id: 'anomalies', label: 'Аномалии', icon: AlertTriangle },
+    { id: 'peaks', label: 'Пики и аномалии', icon: AlertTriangle },
     { id: 'forecast', label: 'Прогнозирование', icon: Zap },
   ]},
   { section: 'ДАННЫЕ', items: [
     { id: 'reconciliation', label: 'Месячная сверка', icon: FileCheck2 },
-    { id: 'quality', label: 'Качество данных', icon: Database },
+    { id: 'quality', label: 'Загрузка файлов', icon: Database },
   ]},
 ]
 
 const pageTitles = {
-  overview: ['Главная', 'Здесь видно, готовы ли данные к работе и что делать дальше'],
+  overview: ['Главная', 'Оперативный статус данных, загрузок и готовности анализа'],
   consumption: ['Энергобаланс', 'Потребление, структура нагрузки и сверка источников'],
-  peaks: ['Пики и лимиты', 'Анализ станет доступен, когда будут готовы интервальные данные'],
-  anomalies: ['Аномалии', 'Раздел покажет найденные отклонения после проверки данных'],
-  forecast: ['Прогнозирование', 'Прогноз появится, когда накопится достаточная история'],
-  reconciliation: ['Месячная сверка', 'Сверка станет доступна после подготовки итоговых данных'],
-  quality: ['Качество данных', 'Загрузка файлов, проверка структуры и замечаний'],
+  peaks: ['Пики и аномалии', 'Резкие изменения нагрузки, контрольные уровни и пиковые дни'],
+  forecast: ['Прогнозирование', 'Ожидаемый расход после накопления достаточной истории'],
+  reconciliation: ['Месячная сверка', 'Сравнение ежедневных сводок с техническим балансом'],
+  quality: ['Загрузка файлов', 'Импорт исходных файлов и детальная проверка структуры'],
 }
 
 const PROD_API_BASE = import.meta.env?.VITE_API_BASE_URL
@@ -126,6 +124,83 @@ async function parseJsonResponse(response) {
 
 const fmt = n => new Intl.NumberFormat('ru-RU').format(Number(n || 0))
 const fmtValue = n => new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(Number(n || 0))
+const chartPalette = ['#0d7a5d', '#35a482', '#78bf79', '#a6d653', '#d7df70', '#e8b85c']
+const fmtDateTime = value => {
+  if (!value) return '—'
+  const normalizedValue = typeof value === 'string' && !/[zZ]|[+-]\d{2}:?\d{2}$/.test(value)
+    ? `${value}Z`
+    : value
+  const date = new Date(normalizedValue)
+  if (Number.isNaN(date.getTime())) return '—'
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZoneName: 'short',
+  }).format(date)
+}
+const fmtShortDateTime = value => {
+  if (!value) return '—'
+  const normalizedValue = typeof value === 'string' && !/[zZ]|[+-]\d{2}:?\d{2}$/.test(value)
+    ? `${value}Z`
+    : value
+  const date = new Date(normalizedValue)
+  if (Number.isNaN(date.getTime())) return '—'
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date)
+}
+const fmtMonthYear = value => {
+  if (!value) return ''
+  const date = new Date(`${value}-01T00:00:00`)
+  if (Number.isNaN(date.getTime())) return ''
+  return new Intl.DateTimeFormat('ru-RU', { month: 'long', year: 'numeric' }).format(date)
+}
+
+function formatPeriodRange(series) {
+  const periods = series
+    .map(item => String(item.period || ''))
+    .filter(period => /^\d{4}-\d{2}$/.test(period))
+    .sort()
+  if (!periods.length) return ''
+
+  const start = fmtMonthYear(periods[0])
+  const end = fmtMonthYear(periods[periods.length - 1])
+  if (!start) return ''
+  return start === end || !end ? start : `${start} — ${end}`
+}
+
+function monthEndDate(period) {
+  if (!/^\d{4}-\d{2}$/.test(String(period || ''))) return ''
+  const [year, month] = period.split('-').map(Number)
+  const end = new Date(year, month, 0)
+  const day = String(end.getDate()).padStart(2, '0')
+  return `${period}-${day}`
+}
+
+function downloadCsv(filename, rows) {
+  const csv = rows
+    .map(row => row.map(value => {
+      const text = String(value ?? '')
+      return /[",\n;]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
+    }).join(';'))
+    .join('\n')
+  const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
+}
 
 function FilterBar({ compact = false }) {
   return <div className={`filter-bar ${compact ? 'compact' : ''}`}>
@@ -153,8 +228,46 @@ function Card({ title, subtitle, action, children, className='' }) {
 }
 
 function Status({ value }) {
-  const cls = value === 'В норме' || value === 'Опубликован' ? 'ok' : value === 'Ошибка' || value === 'Открыта' ? 'bad' : 'work'
+  const cls = value === 'В норме' || value === 'Опубликован' || value === 'Загружен'
+    ? 'ok'
+    : value === 'Ошибка' || value === 'С ошибкой' || value === 'Открыта'
+      ? 'bad'
+      : 'work'
   return <span className={`status ${cls}`}>{value}</span>
+}
+
+function percentile(values, ratio) {
+  const sorted = values.map(Number).filter(Number.isFinite).sort((a, b) => a - b)
+  if (!sorted.length) return 0
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * ratio) - 1))
+  return sorted[index]
+}
+
+function buildDailySignals(daily) {
+  const values = daily.map(item => Number(item.value || 0)).filter(Number.isFinite)
+  const controlLimit = percentile(values, .9)
+  const changes = daily.slice(1).map((item, index) => {
+    const previous = daily[index]
+    const previousValue = Number(previous?.value || 0)
+    const currentValue = Number(item.value || 0)
+    const delta = currentValue - previousValue
+    const deltaPct = previousValue ? delta / previousValue : 0
+    return {
+      date: item.date,
+      previousDate: previous?.date,
+      value: currentValue,
+      delta,
+      deltaPct,
+      direction: delta >= 0 ? 'Повышение' : 'Спад',
+    }
+  }).filter(item => Math.abs(item.deltaPct) >= .05 || item.value >= controlLimit)
+
+  return {
+    controlLimit,
+    events: changes
+      .sort((a, b) => Math.abs(b.deltaPct) - Math.abs(a.deltaPct))
+      .slice(0, 5),
+  }
 }
 
 function EmptyState({ title, text }) {
@@ -210,10 +323,9 @@ async function readApiError(response) {
 }
 
 function mapBatchStatus(status) {
-  if (status === 'published') return 'Опубликован'
-  if (status === 'ready_to_publish') return 'В работе'
-  if (status === 'needs_review' || status === 'failed' || status === 'rejected') return 'Ошибка'
-  return 'В работе'
+  if (status === 'published' || status === 'ready_to_publish' || status === 'uploaded') return 'Загружен'
+  if (status === 'needs_review' || status === 'failed' || status === 'rejected') return 'С ошибкой'
+  return 'Обработка'
 }
 
 function useImportsState() {
@@ -255,6 +367,7 @@ function useImportsState() {
 function Overview({ onOpenQuality, onOpenResult, importsState }) {
   const { imports, error, reload } = importsState
   const totalRows = imports.reduce((sum, item) => sum + item.total_rows, 0)
+  const totalWarnings = imports.reduce((sum, item) => sum + item.warning_count, 0)
   const totalErrors = imports.reduce((sum, item) => sum + item.error_count, 0)
   const lastBatch = imports[0]
   const hasImports = imports.length > 0
@@ -262,11 +375,6 @@ function Overview({ onOpenQuality, onOpenResult, importsState }) {
   const needsAttention = imports.filter(item => item.error_count > 0 || ['needs_review', 'failed', 'rejected'].includes(item.status)).length
   const metric = value => error ? '—' : fmt(value)
   const metricNote = note => error ? 'нет подключения к API' : note
-  const nextAction = error
-    ? 'Повторите попытку через несколько секунд.'
-    : hasImports
-      ? 'Откройте энергобаланс: месячная структура, дневная нагрузка и сверка источников уже рассчитаны.'
-      : 'После загрузки здесь появится краткая сводка.'
   const heroTitle = error
     ? 'Данные временно недоступны'
     : hasImports
@@ -277,11 +385,27 @@ function Overview({ onOpenQuality, onOpenResult, importsState }) {
     : hasImports
       ? 'Система пересчитала потребление по показаниям и подготовила управленческий энергобаланс.'
       : 'Загрузите файл, чтобы начать проверку данных.'
+  const healthTitle = error
+    ? 'Состояние не получено'
+    : hasImports
+      ? totalErrors
+        ? 'Есть замечания к данным'
+        : 'Данные прошли проверку'
+      : 'Проверка ожидает файл'
+  const healthDetails = error
+    ? [{ label: '', value: 'Показатели будут доступны после восстановления соединения с сервисом данных.' }]
+    : hasImports
+      ? [
+        { label: 'Последняя загрузка', value: `${fmtDateTime(lastBatch?.created_at)} по вашему времени` },
+        { label: 'Проверено строк', value: fmt(totalRows) },
+        { label: 'Ошибок', value: fmt(totalErrors) },
+        { label: 'Предупреждений', value: fmt(totalWarnings) },
+      ]
+      : [{ label: '', value: 'После загрузки здесь появится оценка корректности данных.' }]
 
   return <>
     <div className="hero-row">
-      <div><h2>Состояние данных</h2><p>На странице отображаются загруженные файлы, результаты проверки и следующий этап работы.</p></div>
-      <FilterBar/>
+      <div><h2>Сводка по данным</h2><p>Готовность загрузок, качество проверки и доступность управленческого анализа.</p></div>
     </div>
     <div className={`overview-hero ${error ? 'is-offline' : hasImports ? 'is-live' : 'is-empty'}`}>
       <div className="overview-hero-copy">
@@ -295,13 +419,18 @@ function Overview({ onOpenQuality, onOpenResult, importsState }) {
         </div>
       </div>
       <div className="overview-hero-panel">
-        <small>СЕЙЧАС</small>
-        <b>{error ? 'Состояние не получено' : lastBatch ? lastBatch.original_filename : 'Нет загруженных файлов'}</b>
-        <p>{nextAction}</p>
+        <small>ПРОВЕРКА ДАННЫХ</small>
+        <b>{healthTitle}</b>
+        <div className="overview-health-lines">
+          {healthDetails.map(item => <div key={`${item.label}-${item.value}`}>
+            {item.label && <span>{item.label}</span>}
+            <strong>{item.value}</strong>
+          </div>)}
+        </div>
         <div className="overview-hero-metrics">
           <span><strong>{metric(imports.length)}</strong> файлов</span>
           <span><strong>{metric(readyFiles)}</strong> готовы</span>
-          <span><strong>{metric(needsAttention > 0 ? needsAttention : totalErrors)}</strong> на проверке</span>
+          <span><strong>{metric(needsAttention > 0 ? needsAttention : totalErrors)}</strong> с замечаниями</span>
         </div>
       </div>
     </div>
@@ -317,7 +446,7 @@ function Overview({ onOpenQuality, onOpenResult, importsState }) {
           <Database/>
           <div>
             <b>{friendlyApiError(error)}</b>
-            <p>Нулевые показатели скрыты до восстановления подключения к import backend.</p>
+            <p>Показатели будут доступны после восстановления соединения с сервисом данных.</p>
           </div>
           <button onClick={reload}>Повторить подключение <ArrowRight/></button>
         </div>
@@ -329,14 +458,14 @@ function Overview({ onOpenQuality, onOpenResult, importsState }) {
       </Card>
     </div>}
     {!error && !hasImports && <div className="dashboard-grid">
-      <Card className="span-7" title="Порядок работы">
+      <Card className="span-7" title="Как подготовить данные">
         <div className="journey-list wide">
           <div><b>1</b><div><strong>Загрузка файла</strong><p>Допускаются файлы форматов `.xlsx`, `.xls` и `.csv`.</p></div></div>
           <div><b>2</b><div><strong>Проверка и пересчёт</strong><p>Система проверит структуру и независимо пересчитает расход по показаниям.</p></div></div>
           <div><b>3</b><div><strong>Управленческий анализ</strong><p>Энергобаланс покажет структуру нагрузки, пики и расхождения источников.</p></div></div>
         </div>
       </Card>
-      <Card className="span-5" title="Результаты загрузки">
+      <Card className="span-5" title="Что появится после загрузки">
         <div className="readiness-grid single-column">
           <ReadinessCard icon={FileCheck2} eyebrow="ПОСЛЕ ЗАГРУЗКИ" title="История загруженных файлов" text="На главной странице будут отображаться последние загрузки, статус готовности и общий объём данных." />
           <ReadinessCard icon={AlertTriangle} eyebrow="ПО РЕЗУЛЬТАТАМ ПРОВЕРКИ" title="Замечания по качеству" text="Будут отображаться строки и поля, требующие дополнительной проверки." tone="blue" />
@@ -344,19 +473,10 @@ function Overview({ onOpenQuality, onOpenResult, importsState }) {
       </Card>
     </div>}
     {!error && hasImports && <div className="dashboard-grid">
-      <Card className="span-7" title="Состояние данных">
-        <div className="data-table overview-status-table">
-          <div className="tr th"><span>Раздел</span><span>Состояние</span><span>Комментарий</span></div>
-          <div className="tr"><span>Последние загрузки</span><span><Status value="В норме"/></span><span>{lastBatch ? `Последний файл: ${lastBatch.original_filename}` : 'Файлы пока не загружены'}</span></div>
-          <div className="tr"><span>Проверка качества</span><span><Status value={totalErrors ? 'Открыта' : 'В норме'}/></span><span>{totalErrors ? `Найдено замечаний: ${fmt(totalErrors)}` : 'Критичных замечаний не найдено'}</span></div>
-          <div className="tr"><span>Готовность данных</span><span><Status value={readyFiles ? 'В норме' : 'В работе'}/></span><span>{readyFiles ? `${fmt(readyFiles)} файл(ов) готовы к анализу` : 'Данные ещё проходят подготовку'}</span></div>
-          <div className="tr"><span>Следующий этап</span><span><Status value={readyFiles ? 'В норме' : 'В работе'}/></span><span>{readyFiles ? 'Откройте энергобаланс и проверьте расхождения' : 'Дождитесь завершения обработки'}</span></div>
-        </div>
-      </Card>
-      <Card className="span-5" title="Последние файлы">
+      <Card className="span-12" title="Последние загрузки">
         <div className="data-table overview-batches-table">
-          <div className="tr th"><span>Файл</span><span>Статус</span><span>Строк</span></div>
-          {imports.slice(0, 5).map(item => <div className="tr" key={item.id}><span>{item.original_filename}</span><span><Status value={mapBatchStatus(item.status)}/></span><span>{fmt(item.total_rows)}</span></div>)}
+          <div className="tr th"><span>Файл</span><span>Дата</span><span>Статус</span><span>Строк</span></div>
+          {imports.slice(0, 5).map(item => <div className="tr" key={item.id}><span>{item.original_filename}</span><span>{fmtShortDateTime(item.created_at)}</span><span><Status value={mapBatchStatus(item.status)}/></span><span>{fmt(item.total_rows)}</span></div>)}
         </div>
       </Card>
     </div>}
@@ -368,12 +488,12 @@ function PlaceholderPage({ title, text, importsState }) {
   return <>
     <div className="page-actions"><FilterBar compact/><button className="export"><Download/> Экспорт</button></div>
     <div className="kpi-grid three">
-      <KpiCard icon={Database} label="Published batches" value={fmt(imports.filter(item => item.status === 'published').length)} unit="" note="реальные import batches" />
-      <KpiCard icon={AlertTriangle} label="Предметные данные" value="0" unit="" note="ещё не рассчитаны" tone="yellow" />
-      <KpiCard icon={FileCheck2} label="Static rows" value="0" unit="" note="не используются в UI" tone="blue" />
+      <KpiCard icon={Database} label="Готовые загрузки" value={fmt(imports.filter(item => item.status === 'published' || item.status === 'ready_to_publish').length)} unit="" note="доступны для анализа" />
+      <KpiCard icon={AlertTriangle} label="Расчёт раздела" value="0" unit="" note="ожидает подготовку данных" tone="yellow" />
+      <KpiCard icon={FileCheck2} label="Исторические ряды" value="0" unit="" note="нужны для точного расчёта" tone="blue" />
     </div>
-    <Card title={title} subtitle="Честное пустое состояние без выдуманных dashboard rows">
-      <EmptyState title="Предметные ряды ещё не готовы" text={text}/>
+    <Card title={title} subtitle="Раздел появится после подготовки необходимых рядов данных">
+      <EmptyState title="Данные для раздела ещё не готовы" text={text}/>
     </Card>
   </>
 }
@@ -382,6 +502,8 @@ function EnergyBusinessDashboard({ hasImports, onOpenQuality }) {
   const [result, setResult] = useState(null)
   const [loading, setLoading] = useState(hasImports)
   const [error, setError] = useState('')
+  const [fullscreenChart, setFullscreenChart] = useState(null)
+  const [dailySignalsExpanded, setDailySignalsExpanded] = useState(false)
 
   useEffect(() => {
     if (!hasImports) {
@@ -447,27 +569,35 @@ function EnergyBusinessDashboard({ hasImports, onOpenQuality }) {
     if (last >= 2 && last <= 4) return few
     return many
   }
-  const periodLabel = monthly.map(item => item.label).join('–')
+  const periodLabel = formatPeriodRange(monthly)
+  const latestPeriodLabel = fmtMonthYear(meta.latest_period) || meta.latest_label
   const attentionCount = Number(kpis.negative_intervals || 0) + Number(kpis.incomplete_intervals || 0)
   const topExternalTotal = topExternal.reduce((sum, item) => sum + Number(item.value || 0), 0)
+  const externalGroupsTotal = externalGroups.reduce((sum, item) => sum + Number(item.value || 0), 0)
+  const monthlyComposition = monthly.slice(-3)
+  const dailySignals = buildDailySignals(daily)
+  const anomalySummary = dailySignals.events.length
+    ? `${fmt(dailySignals.events.length)} заметных изменений: ${dailySignals.events.filter(item => item.delta > 0).length} повышений и ${dailySignals.events.filter(item => item.delta < 0).length} спадов относительно предыдущего дня.`
+    : 'Резких спадов и повышений относительно предыдущего дня не найдено.'
+  const hasMonthlyChange = kpis.mom_change !== null && kpis.mom_change !== undefined
 
   return <>
     <section className="energy-brief">
       <div className="energy-brief-copy">
-        <span className="energy-kicker">ОПЕРАЦИОННЫЙ ЭНЕРГОБАЛАНС · {periodLabel} 2026</span>
+        <span className="energy-kicker">ОПЕРАЦИОННЫЙ ЭНЕРГОБАЛАНС · {periodLabel}</span>
         <h2>{insight}</h2>
-        <p>Расход пересчитан по показаниям счётчиков. Финансовая оценка скрыта до утверждения границы тарификации.</p>
+        <p>Расход пересчитан по показаниям счётчиков и разделён на собственное потребление КОА и внешних потребителей.</p>
       </div>
       <div className="energy-brief-signal">
-        <small>СИГНАЛ МЕСЯЦА</small>
-        <strong className={Number(kpis.mom_change || 0) >= 0 ? 'up' : 'down'}>{signedPercent(kpis.mom_change)}</strong>
+        <small>ДИНАМИКА ПОТРЕБЛЕНИЯ</small>
+        <strong className={Number(kpis.mom_change || 0) >= 0 ? 'up' : 'down'}>{hasMonthlyChange ? signedPercent(kpis.mom_change) : '—'}</strong>
         <span>к предыдущему месяцу</span>
       </div>
     </section>
 
     <div className="energy-kpis">
       <article>
-        <div><span className="energy-kpi-icon total"><Zap/></span><small>ОБЩИЙ ВХОД · {meta.latest_label}</small></div>
+        <div><span className="energy-kpi-icon total"><Zap/></span><small>ОБЩИЙ ВХОД · {latestPeriodLabel}</small></div>
         <strong>{mln(kpis.total_kwh)}</strong>
         <span>млн кВт·ч</span>
         <p>Независимый пересчёт по исходным показаниям</p>
@@ -476,56 +606,102 @@ function EnergyBusinessDashboard({ hasImports, onOpenQuality }) {
         <div><span className="energy-kpi-icon own"><Factory/></span><small>СОБСТВЕННОЕ · КОА</small></div>
         <strong>{mln(kpis.own_kwh)}</strong>
         <span>млн кВт·ч · {percent(kpis.own_share)}</span>
-        <p>Общий вход минус сторонние организации</p>
+        <p>Общее потребление минус внешние потребители</p>
       </article>
       <article>
-        <div><span className="energy-kpi-icon external"><Database/></span><small>СТОРОННИЕ</small></div>
+        <div><span className="energy-kpi-icon external"><Database/></span><small>ВНЕШНИЕ</small></div>
         <strong>{mln(kpis.external_kwh)}</strong>
         <span>млн кВт·ч · {percent(kpis.external_share)}</span>
         <p>Контролируемая доля внешних потребителей</p>
       </article>
       <article className={attentionCount ? 'attention' : ''}>
-        <div><span className="energy-kpi-icon quality"><AlertTriangle/></span><small>КАЧЕСТВО ПОКРЫТИЯ</small></div>
+        <div><span className="energy-kpi-icon quality"><AlertTriangle/></span><small>КАЧЕСТВО ДНЕВНЫХ ДАННЫХ</small></div>
         <strong>{fmt(kpis.coverage_days)}</strong>
-        <span>дней · {fmt(attentionCount)} {wordForm(attentionCount, 'отклонение', 'отклонения', 'отклонений')}</span>
-        <p>Отрицательных: {fmt(kpis.negative_intervals)} · неполных: {fmt(kpis.incomplete_intervals)}</p>
+        <span>дней с данными · {fmt(attentionCount)} {wordForm(attentionCount, 'замечание', 'замечания', 'замечаний')}</span>
+        <p>Отрицательный расход: {fmt(kpis.negative_intervals)} · неполные интервалы: {fmt(kpis.incomplete_intervals)}</p>
       </article>
     </div>
 
     <div className="dashboard-grid energy-grid">
       <Card
-        className="span-5 energy-chart-card"
-        title="Из чего складывается общий вход"
-        subtitle="КОА и сторонние организации · кВт·ч"
+        className="span-5 energy-chart-card energy-chart-row-primary"
+        title="Состав общего потребления"
+        subtitle="Последние 3 месяца: КОА и внешние потребители"
       >
         <div className="energy-chart monthly-chart">
           <Suspense fallback={<div className="result-chart-fallback">Строим энергобаланс…</div>}>
-            <EnergyBusinessCharts kind="monthly" data={monthly}/>
+            <EnergyBusinessCharts kind="monthly" data={monthlyComposition}/>
           </Suspense>
         </div>
-        <div className="energy-decision">
-          <b>Что решаем</b>
-          <span>Контролируем рост общего входа и долю сторонних потребителей.</span>
+        <div className="energy-composition-summary">
+          <div><span className="own-dot"/> <small>КОА</small><b>{percent(kpis.own_share)}</b></div>
+          <div><span className="external-dot"/> <small>Внешние</small><b>{percent(kpis.external_share)}</b></div>
+          <p>Доли показаны для последнего месяца на графике: {latestPeriodLabel}.</p>
         </div>
       </Card>
 
       <Card
-        className="span-7 energy-chart-card"
-        title="Когда возникает нагрузка"
-        subtitle={`${fmt(kpis.coverage_days)} дней · три сопоставимых ввода`}
-        action={<div className="peak-chip"><span/> Пик {dateLabel(kpis.peak_day?.date)} · {fmt(kpis.peak_day?.value)} кВт·ч</div>}
+        className="span-7 energy-chart-card energy-chart-row-primary"
+        title="Дневная нагрузка"
+        subtitle={`${fmt(kpis.coverage_days)} дней · контролируемый вход`}
+        action={<div className="chart-card-actions">
+          <div className="peak-chip"><span/> Пик {dateLabel(kpis.peak_day?.date)} · {fmt(kpis.peak_day?.value)} кВт·ч</div>
+          <button className="chart-expand-btn" type="button" onClick={() => setFullscreenChart('daily')} title="Открыть график на весь экран" aria-label="Открыть график на весь экран"><Maximize2/></button>
+        </div>}
       >
         <div className="energy-chart daily-chart">
           <Suspense fallback={<div className="result-chart-fallback">Строим дневной профиль…</div>}>
-            <EnergyBusinessCharts kind="daily" data={daily} peakDay={kpis.peak_day}/>
+            <EnergyBusinessCharts kind="daily" data={daily} peakDay={kpis.peak_day} controlLimit={dailySignals.controlLimit}/>
           </Suspense>
         </div>
+        <div className="load-signal-summary">
+          <div><small>КОНТРОЛЬНЫЙ УРОВЕНЬ</small><b>{fmt(dailySignals.controlLimit)} кВт·ч</b></div>
+          <p>{anomalySummary} Контрольный уровень показывает границу, выше которой дни считаются пиковыми.</p>
+        </div>
+        <button
+          className={`load-signal-toggle ${dailySignalsExpanded ? 'expanded' : ''}`}
+          type="button"
+          onClick={() => setDailySignalsExpanded(value => !value)}
+        >
+          <span>{dailySignals.events.length ? `Изменения нагрузки: ${fmt(dailySignals.events.length)}` : 'Резких изменений нет'}</span>
+          <ChevronDown/>
+        </button>
+        {dailySignalsExpanded && <div className="load-signal-list">
+          {dailySignals.events.length ? dailySignals.events.map(item => <div key={`${item.date}-${item.delta}`}>
+            <span className={item.delta >= 0 ? 'rise' : 'fall'}>{item.direction}</span>
+            <b>{dateLabel(item.date)}</b>
+            <small>Контролируемый вход</small>
+            <strong>{item.delta >= 0 ? '+' : '−'}{fmt(Math.abs(item.delta))} кВт·ч</strong>
+          </div>) : <div>
+            <span>Норма</span>
+            <b>{latestPeriodLabel}</b>
+            <small>Контролируемый вход</small>
+            <strong>Без резких изменений</strong>
+          </div>}
+        </div>}
       </Card>
+      {fullscreenChart === 'daily' && <div className="chart-fullscreen" role="dialog" aria-modal="true" aria-label="Дневная нагрузка" onClick={() => setFullscreenChart(null)}>
+        <section onClick={event => event.stopPropagation()}>
+          <header>
+            <div>
+              <small>ДЕТАЛЬНАЯ ВИЗУАЛИЗАЦИЯ</small>
+              <h3>Дневная нагрузка</h3>
+              <p>{fmt(kpis.coverage_days)} дней · пик {dateLabel(kpis.peak_day?.date)} · контрольный уровень {fmt(dailySignals.controlLimit)} кВт·ч</p>
+            </div>
+            <button type="button" onClick={() => setFullscreenChart(null)} aria-label="Закрыть полноэкранный график"><X/></button>
+          </header>
+          <div className="chart-fullscreen-body">
+            <Suspense fallback={<div className="result-chart-fallback">Строим дневной профиль…</div>}>
+              <EnergyBusinessCharts kind="daily" data={daily} peakDay={kpis.peak_day} controlLimit={dailySignals.controlLimit}/>
+            </Suspense>
+          </div>
+        </section>
+      </div>}
 
       <Card
-        className="span-7 energy-chart-card"
-        title={`Куда уходит энергия по линиям 35 кВ · ${meta.latest_label}`}
-        subtitle="Сравнение направлений одного уровня напряжения без двойного счёта"
+        className="span-7 energy-chart-card energy-chart-row-secondary"
+        title={`Расход по линиям 35 кВ · ${latestPeriodLabel}`}
+        subtitle="Сравнение направлений одного уровня напряжения"
       >
         <div className="energy-chart outgoing-chart">
           <Suspense fallback={<div className="result-chart-fallback">Считаем направления…</div>}>
@@ -535,21 +711,28 @@ function EnergyBusinessDashboard({ hasImports, onOpenQuality }) {
       </Card>
 
       <Card
-        className="span-5 energy-chart-card"
-        title={`Сторонние по площадкам · ${meta.latest_label}`}
-        subtitle="Доля в объёме внешних потребителей"
+        className="span-5 energy-chart-card energy-chart-row-secondary"
+        title={`Внешние потребители · ${latestPeriodLabel}`}
+        subtitle="Распределение внешнего потребления по площадкам"
       >
         <div className="energy-chart groups-chart">
           <Suspense fallback={<div className="result-chart-fallback">Группируем площадки…</div>}>
             <EnergyBusinessCharts kind="external" data={externalGroups}/>
           </Suspense>
         </div>
+        <div className="energy-composition-summary external-groups-legend">
+          {externalGroups.map((item, index) => <div key={item.name}>
+            <span style={{ background: chartPalette[index % chartPalette.length] }}/>
+            <small>{item.name}</small>
+            <b>{externalGroupsTotal ? percent(Number(item.value || 0) / externalGroupsTotal) : '—'}</b>
+          </div>)}
+        </div>
       </Card>
 
       <Card
         className="span-7"
-        title="Крупнейшие сторонние потребители"
-        subtitle="Конечные строки без промежуточных итогов"
+        title="Крупнейшие внешние потребители"
+        subtitle="Наибольшие объёмы внешнего потребления"
       >
         <div className="energy-ranking">
           {topExternal.map((item, index) => <div key={`${item.name}-${index}`}>
@@ -565,14 +748,14 @@ function EnergyBusinessDashboard({ hasImports, onOpenQuality }) {
       <Card
         className="span-5"
         title="Сверка источников"
-        subtitle="Daily против техбаланса на общей границе трёх вводов"
+        subtitle="Ежедневные сводки против технического баланса"
       >
         <div className="energy-reconciliation">
           {reconciliation.map(item => {
             const isAlert = Math.abs(Number(item.difference_pct || 0)) > .03
             return <div key={item.period}>
               <span className={`recon-month ${isAlert ? 'alert' : ''}`}>{item.label}</span>
-              <span><small>Daily</small><b>{mln(item.daily_kwh)} млн</b></span>
+              <span><small>Сводка</small><b>{mln(item.daily_kwh)} млн</b></span>
               <span><small>Месяц</small><b>{mln(item.monthly_kwh)} млн</b></span>
               <strong className={isAlert ? 'alert' : ''}>{signedPercent(item.difference_pct)}</strong>
             </div>
@@ -588,6 +771,359 @@ function EnergyBusinessDashboard({ hasImports, onOpenQuality }) {
       {quality.recalculation_difference_kwh != null && <div><FileSpreadsheet/><span>Пересчёт итога: <b>{signedPercent(quality.recalculation_difference_pct)}</b> к значению файла</span></div>}
       <small>{warnings.join(' ')}</small>
     </section>
+  </>
+}
+
+function PeaksAndAnomaliesPage({ hasImports }) {
+  const [result, setResult] = useState(null)
+  const [loading, setLoading] = useState(hasImports)
+  const [error, setError] = useState('')
+  const [availableFilters, setAvailableFilters] = useState({ periods: [] })
+  const [fallbackPeriods, setFallbackPeriods] = useState([])
+  const [selectedPeriod, setSelectedPeriod] = useState('')
+  const [selectedStation, setSelectedStation] = useState('')
+
+  useEffect(() => {
+    if (!hasImports) {
+      setResult(null)
+      setLoading(false)
+      return
+    }
+
+    let active = true
+    setLoading(true)
+    setError('')
+    ;(async () => {
+      try {
+        const params = new URLSearchParams()
+        if (selectedPeriod) {
+          params.set('date_from', `${selectedPeriod}-01`)
+          params.set('date_to', monthEndDate(selectedPeriod))
+        }
+        const suffix = params.toString() ? `?${params.toString()}` : ''
+        const response = await apiFetch(`/api/v1/dashboards/energy-business${suffix}`)
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        const data = await parseJsonResponse(response)
+        if (active) {
+          setResult(data)
+          setFallbackPeriods(current => Array.from(new Set([
+            ...current,
+            ...(data.monthly_series || [])
+              .map(item => String(item.period || ''))
+              .filter(period => /^\d{4}-\d{2}$/.test(period)),
+          ])))
+        }
+      } catch (err) {
+        if (active) setError(err.message || 'Ошибка загрузки')
+      } finally {
+        if (active) setLoading(false)
+      }
+    })()
+
+    return () => {
+      active = false
+    }
+  }, [hasImports, selectedPeriod])
+
+  useEffect(() => {
+    if (!hasImports) return
+
+    let active = true
+    ;(async () => {
+      try {
+        const response = await apiFetch('/api/v1/filters')
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        const data = await parseJsonResponse(response)
+        if (active) setAvailableFilters(data)
+      } catch {
+        if (active) setAvailableFilters({ periods: [] })
+      }
+    })()
+
+    return () => {
+      active = false
+    }
+  }, [hasImports])
+
+  const dateLabel = value => value
+    ? new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long' }).format(new Date(`${value}T00:00:00`))
+    : '—'
+  const periodOptions = Array.from(new Set([...(availableFilters.periods || []), ...fallbackPeriods]))
+    .sort()
+    .slice(-12)
+    .reverse()
+
+  if (!hasImports) {
+    return <Card title="Пики и аномалии пока недоступны">
+      <EmptyState title="Нет дневного ряда" text="Загрузите технический баланс и ежедневную сводку, чтобы увидеть пики, лимиты и резкие изменения."/>
+    </Card>
+  }
+
+  if (loading && !result) {
+    return <div className="result-loading"><span/><b>Готовим пики и аномалии…</b></div>
+  }
+
+  if (error || !result?.daily_series?.length) {
+    return <Card title="Пики и аномалии пока недоступны">
+      <EmptyState title="Данные временно недоступны" text="Дневной ряд не получен. Повторите попытку после проверки загрузок."/>
+    </Card>
+  }
+
+  const stationOptions = Array.from(
+    (result.daily_series || []).reduce((map, item) => {
+      ;(item.sources || []).forEach(source => {
+        if (source?.id && source?.name) map.set(source.id, source.name)
+      })
+      return map
+    }, new Map()),
+  ).map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name, 'ru'))
+  const periodDailySeries = selectedPeriod
+    ? result.daily_series.filter(item => String(item.period || '').startsWith(selectedPeriod) || String(item.date || '').startsWith(selectedPeriod))
+    : result.daily_series
+  const stationValue = item => {
+    const sources = item.sources || []
+    if (selectedStation) {
+      return Number(sources.find(sourceItem => sourceItem.id === selectedStation)?.value || 0)
+    }
+    if (sources.length) {
+      return sources.reduce((sum, source) => sum + Number(source.value || 0), 0)
+    }
+    return Number(item.value || 0)
+  }
+  const filteredDailySeries = periodDailySeries.map(item => ({ ...item, value: stationValue(item) }))
+  const dailySignals = buildDailySignals(filteredDailySeries)
+  const peakDay = filteredDailySeries.length
+    ? filteredDailySeries.reduce((peak, item) => Number(item.value || 0) > Number(peak.value || 0) ? item : peak, filteredDailySeries[0])
+    : null
+  const selectedPeriodLabel = selectedPeriod ? fmtMonthYear(selectedPeriod) : 'весь период'
+  const selectedStationLabel = selectedStation
+    ? stationOptions.find(item => item.id === selectedStation)?.name || 'выбранная площадка'
+    : 'все площадки'
+  const riseCount = dailySignals.events.filter(item => item.delta > 0).length
+  const fallCount = dailySignals.events.filter(item => item.delta < 0).length
+  const exportPeaks = () => {
+    downloadCsv(
+      `peaks-anomalies-${selectedPeriod || 'all'}-${selectedStation || 'all-stations'}.csv`,
+      [
+        ['Дата', 'Площадка', 'Показатель', 'Значение кВт·ч', 'Изменение кВт·ч', 'Изменение %', 'Тип события'],
+        ...dailySignals.events.map(item => [
+          item.date,
+          selectedStationLabel,
+          'Контролируемый вход',
+          Math.round(item.value),
+          Math.round(item.delta),
+          `${(item.deltaPct * 100).toFixed(1).replace('.', ',')}%`,
+          item.direction,
+        ]),
+      ],
+    )
+  }
+
+  return <>
+    <div className="page-actions peak-page-actions">
+      <div className="peak-filter-bar">
+        <label><span>Период</span><div className="period-select-wrap peak-select-wrap"><CalendarDays/><select value={selectedPeriod} onChange={event => setSelectedPeriod(event.target.value)}>
+          <option value="">Весь период</option>
+          {periodOptions.map(period => <option key={period} value={period}>{fmtMonthYear(period)}</option>)}
+        </select><ChevronDown/></div></label>
+        <label><span>Площадка</span><div className="period-select-wrap peak-select-wrap"><Factory/><select value={selectedStation} onChange={event => setSelectedStation(event.target.value)}>
+          <option value="">Все площадки</option>
+          {stationOptions.map(station => <option key={station.id} value={station.id}>{station.name}</option>)}
+        </select><ChevronDown/></div></label>
+      </div>
+      {loading && <span className="filter-loading">Обновляем…</span>}
+      <button className="export" type="button" onClick={exportPeaks}><Download/> Экспорт</button>
+    </div>
+    <section className="peak-signal-strip">
+      <article className="peak-signal-primary">
+        <span><Zap/></span>
+        <small>ПИКОВАЯ НАГРУЗКА</small>
+        <b>{dateLabel(peakDay?.date)}</b>
+        <strong>{fmt(peakDay?.value)} кВт·ч</strong>
+      </article>
+      <article className="peak-signal-secondary">
+        <small>РЕЗКИЕ ИЗМЕНЕНИЯ</small>
+        <div className="peak-signal-value"><b>{fmt(dailySignals.events.length)}</b><strong>событий</strong></div>
+        <div className="peak-change-breakdown">
+          <span className="rise"><TrendingUp/><em>Рост</em><b>{riseCount}</b></span>
+          <span className="fall"><TrendingDown/><em>Спад</em><b>{fallCount}</b></span>
+        </div>
+      </article>
+      <article className="peak-signal-secondary">
+        <small>КОНТРОЛЬНЫЙ УРОВЕНЬ</small>
+        <div className="peak-signal-value"><b>{fmt(dailySignals.controlLimit)}</b><strong>кВт·ч</strong></div>
+        <p>уровень, выше которого начинаются пиковые дни</p>
+      </article>
+    </section>
+    <Card
+      className="span-12 energy-chart-card"
+      title="Пики и аномалии нагрузки"
+      subtitle="Даты резких спадов и повышений по контролируемому входу"
+      action={<div className="peak-chip"><span/> Пик {dateLabel(peakDay?.date)}</div>}
+    >
+      <div className="energy-chart peak-anomaly-chart">
+        <Suspense fallback={<div className="result-chart-fallback">Строим дневной профиль…</div>}>
+          <EnergyBusinessCharts kind="daily" data={filteredDailySeries} peakDay={peakDay} controlLimit={dailySignals.controlLimit}/>
+        </Suspense>
+      </div>
+      <div className="load-signal-summary wide">
+        <div><small>ИТОГ ПО ОТКЛОНЕНИЯМ</small><b>{dailySignals.events.length ? `${riseCount} рост · ${fallCount} спад` : 'Без резких изменений'}</b></div>
+        <p>{dailySignals.events.length
+          ? `Период: ${selectedPeriodLabel}. Площадка: ${selectedStationLabel}. Проверено ${fmt(filteredDailySeries.length)} дней. Найдены даты с заметным изменением нагрузки относительно предыдущего дня.`
+          : `Период: ${selectedPeriodLabel}. Площадка: ${selectedStationLabel}. Проверено ${fmt(filteredDailySeries.length)} дней. По дневному ряду нет выраженных скачков относительно предыдущего дня и контрольного уровня.`}</p>
+      </div>
+      <div className="load-signal-list wide">
+        {dailySignals.events.length ? dailySignals.events.map(item => <div key={`${item.date}-${item.delta}`}>
+          <span className={item.delta >= 0 ? 'rise' : 'fall'}>{item.direction}</span>
+          <b>{dateLabel(item.date)}</b>
+          <small>Контролируемый вход</small>
+          <strong>{item.delta >= 0 ? '+' : '−'}{fmt(Math.abs(item.delta))} кВт·ч</strong>
+        </div>) : <div><span>Норма</span><b>{selectedPeriodLabel}</b><small>Контролируемый вход</small><strong>Без резких изменений</strong></div>}
+      </div>
+    </Card>
+  </>
+}
+
+function ForecastPage({ hasImports }) {
+  const [result, setResult] = useState(null)
+  const [loading, setLoading] = useState(hasImports)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    if (!hasImports) {
+      setResult(null)
+      setLoading(false)
+      return
+    }
+
+    let active = true
+    setLoading(true)
+    setError('')
+    ;(async () => {
+      try {
+        const response = await apiFetch('/api/v1/dashboards/energy-business')
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        const data = await parseJsonResponse(response)
+        if (active) setResult(data)
+      } catch (err) {
+        if (active) setError(err.message || 'Ошибка загрузки')
+      } finally {
+        if (active) setLoading(false)
+      }
+    })()
+
+    return () => {
+      active = false
+    }
+  }, [hasImports])
+
+  if (!hasImports) {
+    return <Card title="Прогнозирование пока недоступно">
+      <EmptyState title="Нет истории для прогноза" text="Загрузите технический баланс и ежедневную сводку за последний месяц, чтобы построить прогноз."/>
+    </Card>
+  }
+
+  if (loading) {
+    return <div className="result-loading"><span/><b>Считаем прогноз по последнему месяцу…</b></div>
+  }
+
+  const forecast = result?.forecast
+  if (error || !forecast || forecast.status !== 'ready') {
+    return <Card title="Прогнозирование пока недоступно">
+      <EmptyState title="Недостаточно данных" text={forecast?.message || 'Нужен хотя бы один технический баланс с распознанным месяцем.'}/>
+    </Card>
+  }
+
+  const mln = value => new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(Number(value || 0) / 1_000_000)
+  const percent = value => new Intl.NumberFormat('ru-RU', { style: 'percent', maximumFractionDigits: 1 }).format(Number(value || 0))
+  const signedPercent = value => `${Number(value || 0) >= 0 ? '+' : '−'}${percent(Math.abs(Number(value || 0)))}`
+  const confidencePercent = `${Math.round(Number(forecast.confidence || 0) * 100)}%`
+  const sourcePeriodLabel = fmtMonthYear(forecast.source_period)
+  const forecastPeriodLabel = fmtMonthYear(forecast.period)
+  const mainScenario = forecast.scenarios?.find(item => item.name === 'Базовый') || forecast.scenarios?.[1]
+  const exportForecast = () => {
+    downloadCsv(
+      `forecast-${forecast.period}.csv`,
+      [
+        ['Дата', 'Базовый прогноз кВт·ч', 'Нижняя граница кВт·ч', 'Верхняя граница кВт·ч', 'Накопительно кВт·ч'],
+        ...(forecast.series || []).map(item => [
+          item.date,
+          Math.round(Number(item.value || 0)),
+          Math.round(Number(item.lower || 0)),
+          Math.round(Number(item.upper || 0)),
+          Math.round(Number(item.cumulative || 0)),
+        ]),
+      ],
+    )
+  }
+
+  return <>
+    <section className="forecast-hero">
+      <div>
+        <span><TrendingUp/></span>
+        <div>
+          <small>ПРОГНОЗ НА {String(forecastPeriodLabel).toUpperCase()}</small>
+          <b>{mln(forecast.forecast_total_kwh)} млн кВт·ч</b>
+          <p>Расчёт построен по последнему загруженному месяцу: {sourcePeriodLabel}.</p>
+        </div>
+      </div>
+      <div>
+        <b>{confidencePercent}</b>
+        <span>уверенность модели</span>
+        <button className="forecast-export" type="button" onClick={exportForecast}><Download/> Экспорт</button>
+      </div>
+    </section>
+
+    <div className="kpi-grid">
+      <KpiCard icon={Zap} label="Базовый прогноз" value={mln(forecast.forecast_total_kwh)} unit="млн кВт·ч" note={`${signedPercent(forecast.expected_change_pct)} к последнему месяцу`} />
+      <KpiCard icon={Factory} label="Собственное КОА" value={mln(forecast.own_kwh)} unit="млн кВт·ч" note={`${percent(forecast.own_share)} от прогноза`} tone="blue" />
+      <KpiCard icon={Database} label="Внешние" value={mln(forecast.external_kwh)} unit="млн кВт·ч" note={`${percent(forecast.external_share)} от прогноза`} tone="yellow" />
+      <KpiCard icon={CalendarDays} label="Профиль нагрузки" value={fmt(forecast.source_days)} unit="дн." note="взято из последнего месяца" tone="green" />
+    </div>
+
+    <div className="dashboard-grid">
+      <Card
+        className="span-8 energy-chart-card"
+        title={`Дневной прогноз · ${forecastPeriodLabel}`}
+        subtitle="Контролируемый вход с коридором неопределённости"
+        action={<div className="peak-chip"><span/> База {mln(mainScenario?.value)} млн кВт·ч</div>}
+      >
+        <div className="energy-chart forecast-chart">
+          <Suspense fallback={<div className="result-chart-fallback">Строим прогноз…</div>}>
+            <EnergyBusinessCharts kind="forecast" data={forecast.series || []}/>
+          </Suspense>
+        </div>
+        <div className="load-signal-summary wide">
+          <div><small>ОЖИДАЕМЫЙ ДИАПАЗОН</small><b>{mln(forecast.forecast_low_kwh)}–{mln(forecast.forecast_high_kwh)} млн кВт·ч</b></div>
+          <p>Коридор учитывает волатильность дневного профиля и длину доступной месячной истории. Чем больше загруженных периодов, тем уже станет диапазон.</p>
+        </div>
+      </Card>
+
+      <Card className="span-4" title="Сценарии месяца" subtitle="Общий расход по техническому балансу">
+        <div className="scenario-grid forecast-scenarios">
+          {(forecast.scenarios || []).map((item, index) => <article className="scenario" key={item.name}>
+            <b>{mln(item.value)}</b>
+            <span>{item.name}<br/>{signedPercent(item.delta_pct)}</span>
+            <i style={{ background: chartPalette[index % chartPalette.length] }}/>
+          </article>)}
+        </div>
+        <div className="forecast-driver-list">
+          {(forecast.drivers || []).map(item => <div key={item.label}>
+            <span>{item.label}</span>
+            <b>{typeof item.value === 'number' ? (Math.abs(item.value) < 1 ? signedPercent(item.value) : fmt(item.value)) : item.value}</b>
+          </div>)}
+        </div>
+      </Card>
+
+      <Card className="span-12" title="Как считается прогноз" subtitle="Прозрачная модель без скрытых коэффициентов">
+        <div className="forecast-method">
+          {(forecast.method || []).map((item, index) => <div key={item}>
+            <b>{index + 1}</b>
+            <span>{item}</span>
+          </div>)}
+        </div>
+      </Card>
+    </div>
   </>
 }
 
@@ -693,7 +1229,7 @@ function Quality({ importsState, onUploadComplete }) {
       </div>
     </Card>}
     {!historyUnavailable && <>
-    <div className="dq-score"><div className="score-ring"><b>{score}</b><span>из 100</span></div><div><small>ОБЩАЯ ОЦЕНКА КАЧЕСТВА</small><h2>{imports.length ? 'Оценка построена по загруженным файлам' : 'Файлы ещё не загружены'}</h2><p>Проверено {fmt(totalRows)} строк из {imports.length} файлов</p></div><div className="dq-metrics"><span><b>{fmt(totalRows)}</b>Строк</span><span><b>{totalWarnings + totalErrors}</b>Замечаний</span><span><b>{successfulImports} / {imports.length}</b>Готово</span></div></div>
+    <div className="dq-score"><div className="score-ring"><b>{score}</b><span>из 100</span></div><div><small>ОЦЕНКА КАЧЕСТВА</small><h2>{imports.length ? 'Проверка построена по загруженным файлам' : 'Файлы ещё не загружены'}</h2><p>Проверено {fmt(totalRows)} строк из {imports.length} файлов</p></div><div className="dq-metrics"><span><b>{fmt(totalRows)}</b>Строк</span><span><b>{totalWarnings + totalErrors}</b>Замечаний</span><span><b>{successfulImports} / {imports.length}</b>Готово</span></div></div>
     <div className="kpi-grid three">
       <KpiCard icon={Database} label="Проверено строк" value={fmt(totalRows)} unit="" note="по загруженным файлам"/>
       <KpiCard icon={AlertTriangle} label="Замечаний" value={String(totalWarnings + totalErrors)} unit="" note="требуют проверки" tone="yellow"/>
@@ -717,15 +1253,15 @@ function Quality({ importsState, onUploadComplete }) {
 
 function Sidebar({ page, setPage, mobile, setMobile, backendState, onResetAllData, resetting }) {
   const backendLabel = backendState === 'pending'
-    ? 'Connecting'
+    ? 'Синхронизация'
     : backendState === 'offline'
-      ? 'Unavailable'
-      : 'Local environment'
+      ? 'Нет соединения'
+      : 'Connected'
 
   return <aside className={`sidebar ${mobile?'mobile-open':''}`}>
     <div className="logo"><div className="brand-mark"><Zap fill="currentColor"/></div><div><b>ЭнергоПульс</b><span>Казахойл Актобе</span></div><button className="mobile-close" onClick={()=>setMobile(false)}><X/></button></div>
     <nav>{nav.map(group => <div className="nav-group" key={group.section}><small>{group.section}</small>{group.items.map(({id,label,icon:Icon}) => <button key={id} className={page===id?'active':''} onClick={()=>{setPage(id);setMobile(false)}}><Icon/><span>{label}</span></button>)}</div>)}</nav>
-    <div className="sidebar-bottom"><div className={`aws-pill ${backendState}`}><span>API</span><div><b>Import backend</b><small><i/> {backendLabel}</small></div></div><button className="export primary" onClick={onResetAllData} disabled={resetting}><AlertTriangle/> {resetting ? 'Очистка…' : 'Очистить всё'}</button><button><LogOut/> Закрыть сессию</button></div>
+    <div className="sidebar-bottom"><div className={`aws-pill ${backendState}`}><span>AWS</span><div><b>QuickSight</b><small><i/> {backendLabel}</small></div></div><button className="sidebar-danger" onClick={onResetAllData} disabled={resetting}><AlertTriangle/> {resetting ? 'Очистка…' : 'Очистить всё'}</button></div>
   </aside>
 }
 
@@ -760,10 +1296,9 @@ function AppShell({ dark, setDark }) {
   const screens = {
     overview: <Overview onOpenQuality={()=>setPage('quality')} onOpenResult={openResult} importsState={importsState}/>,
     consumption: <EnergyBusinessDashboard hasImports={importsState.imports.length > 0} onOpenQuality={()=>setPage('quality')}/>,
-    peaks: <PlaceholderPage title="Пики и лимиты" text="Пиковые нагрузки и лимиты нельзя показывать без реальных интервалов и правил агрегации, поэтому экран ожидает предметные данные." importsState={importsState}/>,
-    anomalies: <PlaceholderPage title="Аномалии" text="Экран должен перейти на реальные validation/anomaly records после реализации semantic layer." importsState={importsState}/>,
-    forecast: <PlaceholderPage title="Прогнозирование" text="Фиктивные прогнозные точки и доверительные интервалы удалены. Прогноз появится только после загрузки исторических рядов и backtest." importsState={importsState}/>,
-    reconciliation: <PlaceholderPage title="Месячная сверка" text="Фиктивная сверка daily/monthly удалена. Реальная сверка должна строиться из daily_summary и technical_balance после предметного ETL." importsState={importsState}/>,
+    peaks: <PeaksAndAnomaliesPage hasImports={importsState.imports.length > 0}/>,
+    forecast: <ForecastPage hasImports={importsState.imports.length > 0}/>,
+    reconciliation: <PlaceholderPage title="Месячная сверка" text="Раздел будет сравнивать ежедневные сводки с техническим балансом после подготовки итоговых правил сверки." importsState={importsState}/>,
     quality: <Quality importsState={importsState} onUploadComplete={openResult}/>,
   }
   const title = pageTitles[page]
@@ -772,7 +1307,7 @@ function AppShell({ dark, setDark }) {
     <Sidebar page={page} setPage={setPage} mobile={mobile} setMobile={setMobile} backendState={backendState} onResetAllData={resetAllData} resetting={resetting}/>
     {mobile&&<div className="scrim" onClick={()=>setMobile(false)}/>}
     <div className="main">
-      <header className="topbar"><button className="menu-btn" onClick={()=>setMobile(true)}><Menu/></button><div><h1>{title[0]}</h1><p>{title[1]}</p></div><div className="top-actions"><button className="search-btn"><Search/><span>Поиск</span><kbd>⌘ K</kbd></button><button className="search-btn" onClick={resetAllData} disabled={resetting}>{resetting ? 'Очистка…' : 'Сброс данных'}</button><button className="theme-btn" onClick={()=>setDark(!dark)}>{dark?<Sun/>:<Moon/>}</button><button className="bell"><Bell/><i/></button><div className="profile"><span>LO</span><div><b>Локальная сессия</b><small>frontend theme only</small></div><ChevronDown/></div></div></header>
+      <header className="topbar"><button className="menu-btn" onClick={()=>setMobile(true)}><Menu/></button><div><h1>{title[0]}</h1><p>{title[1]}</p></div><div className="top-actions"><button className="theme-btn" onClick={()=>setDark(!dark)}>{dark?<Sun/>:<Moon/>}</button><button className="logout-btn"><LogOut/> <span>Выйти</span></button></div></header>
       <main className="content">{screens[page]}</main>
     </div>
   </div>

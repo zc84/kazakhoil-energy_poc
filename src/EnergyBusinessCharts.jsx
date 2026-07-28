@@ -1,7 +1,7 @@
 import React from 'react'
 import {
-  Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Legend, Line,
-  LineChart, Pie, PieChart, ReferenceLine, ResponsiveContainer, Tooltip,
+  Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Line,
+  LineChart, Pie, PieChart, ReferenceLine, ReferenceArea, ResponsiveContainer, Tooltip,
   XAxis, YAxis,
 } from 'recharts'
 
@@ -44,16 +44,18 @@ function MonthlyBalance({ data }) {
       <XAxis dataKey="label" axisLine={false} tickLine={false}/>
       <YAxis tickFormatter={compact} axisLine={false} tickLine={false} width={50}/>
       <Tooltip content={<EnergyTooltip/>}/>
-      <Legend iconType="circle" formatter={value => value}/>
       <Bar dataKey="own_kwh" name="КОА" stackId="balance" fill={palette.own} radius={[0, 0, 0, 0]}/>
-      <Bar dataKey="external_kwh" name="Сторонние" stackId="balance" fill={palette.external} radius={[6, 6, 0, 0]}/>
+      <Bar dataKey="external_kwh" name="Внешние" stackId="balance" fill={palette.external} radius={[6, 6, 0, 0]}/>
     </BarChart>
   </ResponsiveContainer>
 }
 
-function DailyLoad({ data, peakDay }) {
+function DailyLoad({ data, peakDay, controlLimit }) {
+  const maxValue = data.reduce((max, item) => Math.max(max, Number(item.value || 0)), 0)
+  const yMax = maxValue > 0 ? maxValue * 1.5 : 'auto'
+
   return <ResponsiveContainer width="100%" height="100%">
-    <AreaChart data={data} margin={{ top: 10, right: 14, bottom: 0, left: 0 }}>
+    <AreaChart data={data} margin={{ top: 10, right: 24, bottom: 0, left: 18 }}>
       <defs>
         <linearGradient id="dailyEnergyFill" x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor={palette.line} stopOpacity=".28"/>
@@ -68,8 +70,20 @@ function DailyLoad({ data, peakDay }) {
         tickLine={false}
         minTickGap={28}
       />
-      <YAxis tickFormatter={compact} axisLine={false} tickLine={false} width={50}/>
+      <YAxis domain={[0, yMax]} tickFormatter={compact} axisLine={false} tickLine={false} width={50}/>
       <Tooltip content={<EnergyTooltip date/>}/>
+      {controlLimit && <ReferenceArea
+        y1={controlLimit}
+        y2={Math.max(controlLimit, peakDay?.value || controlLimit)}
+        fill={palette.peak}
+        fillOpacity={0.06}
+      />}
+      {controlLimit && <ReferenceLine
+        y={controlLimit}
+        stroke={palette.peak}
+        strokeDasharray="6 4"
+        label={{ value: 'Контрольный уровень', position: 'insideTopLeft', fill: palette.peak, fontSize: 10 }}
+      />}
       {peakDay?.date && <ReferenceLine
         x={peakDay.date}
         stroke={palette.peak}
@@ -113,7 +127,6 @@ function Outgoing35kv({ data }) {
 }
 
 function ExternalGroups({ data }) {
-  const total = data.reduce((sum, item) => sum + Number(item.value || 0), 0)
   return <ResponsiveContainer width="100%" height="100%">
     <PieChart>
       <Pie
@@ -130,19 +143,69 @@ function ExternalGroups({ data }) {
         {data.map((_, index) => <Cell key={index} fill={palette.bars[index % palette.bars.length]}/>)}
       </Pie>
       <Tooltip formatter={value => [`${fmt(value)} кВт·ч`, 'Потребление']}/>
-      <Legend
-        verticalAlign="bottom"
-        iconType="circle"
-        formatter={(value, entry) => `${value} · ${Math.round(Number(entry.payload.value || 0) / total * 100)}%`}
-      />
     </PieChart>
   </ResponsiveContainer>
 }
 
-export default function EnergyBusinessCharts({ kind, data, peakDay }) {
+function ForecastLoad({ data }) {
+  const maxValue = data.reduce((max, item) => Math.max(max, Number(item.upper || item.value || 0)), 0)
+  const yMax = maxValue > 0 ? maxValue * 1.18 : 'auto'
+
+  return <ResponsiveContainer width="100%" height="100%">
+    <AreaChart data={data} margin={{ top: 10, right: 24, bottom: 0, left: 18 }}>
+      <defs>
+        <linearGradient id="forecastEnergyFill" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={palette.line} stopOpacity=".25"/>
+          <stop offset="100%" stopColor={palette.line} stopOpacity=".03"/>
+        </linearGradient>
+      </defs>
+      <CartesianGrid stroke="var(--grid)" vertical={false}/>
+      <XAxis
+        dataKey="date"
+        tickFormatter={shortDate}
+        axisLine={false}
+        tickLine={false}
+        minTickGap={26}
+      />
+      <YAxis domain={[0, yMax]} tickFormatter={compact} axisLine={false} tickLine={false} width={50}/>
+      <Tooltip content={<EnergyTooltip date/>}/>
+      <Area
+        type="monotone"
+        dataKey="value"
+        name="Базовый прогноз"
+        stroke={palette.line}
+        strokeWidth={2.3}
+        fill="url(#forecastEnergyFill)"
+        dot={false}
+        activeDot={{ r: 4, fill: palette.line, stroke: '#fff', strokeWidth: 2 }}
+      />
+      <Line
+        type="monotone"
+        dataKey="upper"
+        name="Верхняя граница"
+        stroke={palette.peak}
+        strokeWidth={1.4}
+        strokeDasharray="5 5"
+        dot={false}
+      />
+      <Line
+        type="monotone"
+        dataKey="lower"
+        name="Нижняя граница"
+        stroke="#35a482"
+        strokeWidth={1.4}
+        strokeDasharray="5 5"
+        dot={false}
+      />
+    </AreaChart>
+  </ResponsiveContainer>
+}
+
+export default function EnergyBusinessCharts({ kind, data, peakDay, controlLimit }) {
   if (kind === 'monthly') return <MonthlyBalance data={data}/>
-  if (kind === 'daily') return <DailyLoad data={data} peakDay={peakDay}/>
+  if (kind === 'daily') return <DailyLoad data={data} peakDay={peakDay} controlLimit={controlLimit}/>
   if (kind === 'outgoing') return <Outgoing35kv data={data}/>
   if (kind === 'external') return <ExternalGroups data={data}/>
+  if (kind === 'forecast') return <ForecastLoad data={data}/>
   return null
 }

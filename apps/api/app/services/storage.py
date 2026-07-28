@@ -17,13 +17,27 @@ def _safe_filename(filename: str | None) -> str:
     return cleaned or "upload"
 
 
-def save_upload(file: UploadFile) -> tuple[bytes, str, Path]:
+def read_upload_payload(file: UploadFile) -> bytes:
+    return file.file.read()
+
+
+def checksum_payload(payload: bytes) -> str:
+    return hashlib.sha256(payload).hexdigest()
+
+
+def save_payload(payload: bytes, filename: str | None, checksum: str | None = None) -> Path:
     settings = get_settings()
-    payload = file.file.read()
-    checksum = hashlib.sha256(payload).hexdigest()
+    effective_checksum = checksum or checksum_payload(payload)
     target_dir = settings.storage_root / "raw-imports"
     target_dir.mkdir(parents=True, exist_ok=True)
-    safe_name = _safe_filename(file.filename)
-    target_path = target_dir / f"{checksum}_{safe_name}"
+    safe_name = _safe_filename(filename)
+    target_path = target_dir / f"{effective_checksum}_{safe_name}"
     target_path.write_bytes(payload)
+    return target_path
+
+
+def save_upload(file: UploadFile) -> tuple[bytes, str, Path]:
+    payload = read_upload_payload(file)
+    checksum = checksum_payload(payload)
+    target_path = save_payload(payload, file.filename, checksum=checksum)
     return payload, checksum, target_path

@@ -1,8 +1,11 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+import csv
+import io
 import shutil
 
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, selectinload
 
@@ -26,12 +29,15 @@ from .schemas import (
     ValidationIssueRead,
 )
 from .services.dashboard import (
+    build_available_filters,
     build_energy_business_dashboard,
     build_import_backed_dashboard,
     build_import_result,
+    is_period_in_range,
+    parse_period_start_from_filename,
 )
 from .services.ingestion import parse_file
-from .services.storage import save_upload
+from .services.storage import checksum_payload, read_upload_payload, save_payload
 
 settings = get_settings()
 cors_origins = [origin.strip() for origin in settings.cors_allow_origins.split(",") if origin.strip()]
@@ -91,16 +97,24 @@ def reset_all_data(db: Session = Depends(get_db)) -> dict[str, object]:
 @app.post("/api/v1/imports", response_model=ImportBatchRead, tags=["imports"])
 def create_import(
     file: UploadFile = File(...),
+    response: Response = None,
     db: Session = Depends(get_db),
 ) -> ImportBatch:
-    payload, checksum, storage_path = save_upload(file)
+    payload = read_upload_payload(file)
+    checksum = checksum_payload(payload)
     existing = db.scalar(
         select(ImportBatch)
         .where(ImportBatch.checksum_sha256 == checksum)
         .options(selectinload(ImportBatch.files))
     )
     if existing is not None:
+        if response is not None:
+            response.headers["X-Import-Idempotent-Reuse"] = "true"
+            response.headers["X-Import-Batch-Id"] = str(existing.id)
+            response.headers["X-Import-Version"] = "1"
         return existing
+
+    storage_path = save_payload(payload, file.filename, checksum=checksum)
 
     parsed = parse_file(file.filename or "upload", payload)
     batch = ImportBatch(
@@ -158,6 +172,10 @@ def create_import(
     )
     db.commit()
     db.refresh(batch)
+    if response is not None:
+        response.headers["X-Import-Idempotent-Reuse"] = "false"
+        response.headers["X-Import-Batch-Id"] = str(batch.id)
+        response.headers["X-Import-Version"] = "1"
     return db.scalar(
         select(ImportBatch)
         .where(ImportBatch.id == batch.id)
@@ -195,6 +213,32 @@ def get_import_issues(batch_id: int, db: Session = Depends(get_db)) -> list[Vali
     ).all()
 
 
+@app.get(
+    "/api/v1/imports/{batch_id}/issues/export",
+    response_class=PlainTextResponse,
+    tags=["imports"],
+)
+def export_import_issues_csv(batch_id: int, db: Session = Depends(get_db)) -> str:
+    _ = get_import(batch_id, db)
+    issues = get_import_issues(batch_id, db)
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(["id", "severity", "rule_code", "message", "sheet_name", "row_index"])
+    for issue in issues:
+        writer.writerow(
+            [
+                issue.id,
+                issue.severity.value,
+                issue.rule_code,
+                issue.message,
+                issue.sheet_name or "",
+                issue.row_index if issue.row_index is not None else "",
+            ]
+        )
+    return buffer.getvalue()
+
+
 @app.get("/api/v1/imports/{batch_id}/preview", response_model=ImportPreviewRead, tags=["imports"])
 def get_import_preview(batch_id: int, db: Session = Depends(get_db)) -> ImportPreviewRead:
     batch = get_import(batch_id, db)
@@ -225,8 +269,21 @@ def publish_import(batch_id: int, db: Session = Depends(get_db)) -> ImportBatch:
 
 
 @app.get("/api/v1/dashboards/daily", response_model=DashboardRead, tags=["dashboards"])
-def daily_dashboard(db: Session = Depends(get_db)) -> dict[str, object]:
-    return build_import_backed_dashboard(db, DatasetKind.daily_summary)
+def daily_dashboard(
+    station_id: str | None = None,
+    substation_id: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    payload = build_import_backed_dashboard(db, DatasetKind.daily_summary, date_from=date_from, date_to=date_to)
+    payload["meta"]["filters"] = {
+        "station_id": station_id,
+        "substation_id": substation_id,
+        "date_from": date_from.isoformat() if date_from else None,
+        "date_to": date_to.isoformat() if date_to else None,
+    }
+    return payload
 
 
 @app.get(
@@ -234,23 +291,70 @@ def daily_dashboard(db: Session = Depends(get_db)) -> dict[str, object]:
     response_model=EnergyBusinessDashboardRead,
     tags=["dashboards"],
 )
-def energy_business_dashboard(db: Session = Depends(get_db)) -> dict[str, object]:
-    return build_energy_business_dashboard(db)
+def energy_business_dashboard(
+    station_id: str | None = None,
+    substation_id: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    return build_energy_business_dashboard(
+        db,
+        station_id=station_id,
+        substation_id=substation_id,
+        date_from=date_from,
+        date_to=date_to,
+    )
 
 
 @app.get("/api/v1/dashboards/monthly", response_model=DashboardRead, tags=["dashboards"])
-def monthly_dashboard(db: Session = Depends(get_db)) -> dict[str, object]:
-    return build_import_backed_dashboard(db, DatasetKind.technical_balance)
+def monthly_dashboard(
+    station_id: str | None = None,
+    substation_id: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    payload = build_import_backed_dashboard(db, DatasetKind.technical_balance, date_from=date_from, date_to=date_to)
+    payload["meta"]["filters"] = {
+        "station_id": station_id,
+        "substation_id": substation_id,
+        "date_from": date_from.isoformat() if date_from else None,
+        "date_to": date_to.isoformat() if date_to else None,
+    }
+    return payload
 
 
 @app.get("/api/v1/dashboards/anomalies", response_model=DashboardRead, tags=["dashboards"])
-def anomalies_dashboard(db: Session = Depends(get_db)) -> dict[str, object]:
+def anomalies_dashboard(
+    station_id: str | None = None,
+    substation_id: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
     batches = db.scalars(select(ImportBatch).order_by(ImportBatch.created_at.desc())).all()
+    if date_from or date_to:
+        filtered_batches = []
+        for batch in batches:
+            period_start = parse_period_start_from_filename(batch.original_filename)
+            if not is_period_in_range(period_start, date_from, date_to):
+                continue
+            filtered_batches.append(batch)
+        batches = filtered_batches
     warnings = []
     if not batches:
         warnings.append("No import batches loaded yet.")
     return {
-        "meta": {"generated_from": "validation_issues"},
+        "meta": {
+            "generated_from": "validation_issues",
+            "filters": {
+                "station_id": station_id,
+                "substation_id": substation_id,
+                "date_from": date_from.isoformat() if date_from else None,
+                "date_to": date_to.isoformat() if date_to else None,
+            },
+        },
         "kpis": {
             "batches": len(batches),
             "warnings": sum(batch.warning_count for batch in batches),
@@ -271,3 +375,8 @@ def anomalies_dashboard(db: Session = Depends(get_db)) -> dict[str, object]:
         "insight": "Anomaly dashboard currently reflects validation issue counts per batch.",
         "warnings": warnings,
     }
+
+
+@app.get("/api/v1/filters", tags=["dashboards"])
+def dashboard_filters(db: Session = Depends(get_db)) -> dict[str, object]:
+    return build_available_filters(db)

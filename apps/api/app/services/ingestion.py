@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+from decimal import Decimal, InvalidOperation
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -43,6 +44,32 @@ class ParsedWorkbook:
     issues: list[ParsedIssue]
 
 
+def _normalize_decimal_text(value: str) -> str | None:
+    normalized = value.strip().replace("\u00a0", " ")
+    normalized = " ".join(normalized.split())
+    if not normalized:
+        return None
+    decimal_candidate = normalized.replace(" ", "").replace(",", ".")
+    try:
+        parsed = Decimal(decimal_candidate)
+    except InvalidOperation:
+        return None
+    return format(parsed, "f")
+
+
+def _normalize_cell(value: object) -> object:
+    if isinstance(value, str):
+        decimal_value = _normalize_decimal_text(value)
+        if decimal_value is not None:
+            return decimal_value
+        return " ".join(value.replace("\u00a0", " ").split())
+    return value
+
+
+def _normalize_row_values(values: list[object]) -> list[object]:
+    return [_normalize_cell(value) for value in values]
+
+
 def parse_file(filename: str, payload: bytes) -> ParsedWorkbook:
     suffix = Path(filename).suffix.lower()
     if suffix == ".csv":
@@ -77,10 +104,10 @@ def _detect_dataset_kind(sheet_names: list[str]) -> DatasetKind:
 def _parse_csv(payload: bytes) -> ParsedWorkbook:
     text = payload.decode("utf-8-sig", errors="replace")
     reader = csv.reader(io.StringIO(text))
-    rows = [
-        ParsedRow("csv", index, json.dumps(cells, ensure_ascii=False))
-        for index, cells in enumerate(reader, start=1)
-    ]
+    rows = []
+    for index, cells in enumerate(reader, start=1):
+        normalized_cells = _normalize_row_values(list(cells))
+        rows.append(ParsedRow("csv", index, json.dumps(normalized_cells, ensure_ascii=False)))
     issues = _basic_issues(["csv"], rows)
     return ParsedWorkbook(
         dataset_kind=DatasetKind.unknown,
@@ -98,8 +125,9 @@ def _parse_xlsx(payload: bytes) -> ParsedWorkbook:
     for sheet_name in workbook.sheetnames:
         sheet = workbook[sheet_name]
         for row_index, row in enumerate(sheet.iter_rows(values_only=True), start=1):
+            normalized = _normalize_row_values(list(row))
             rows.append(
-                ParsedRow(sheet_name, row_index, json.dumps(list(row), ensure_ascii=False, default=str))
+                ParsedRow(sheet_name, row_index, json.dumps(normalized, ensure_ascii=False, default=str))
             )
     issues = _basic_issues(workbook.sheetnames, rows)
     return ParsedWorkbook(
@@ -117,11 +145,12 @@ def _parse_xls(payload: bytes) -> ParsedWorkbook:
     rows: list[ParsedRow] = []
     for sheet in workbook.sheets():
         for row_index in range(sheet.nrows):
+            normalized = _normalize_row_values(list(sheet.row_values(row_index)))
             rows.append(
                 ParsedRow(
                     sheet.name,
                     row_index + 1,
-                    json.dumps(sheet.row_values(row_index), ensure_ascii=False, default=str),
+                    json.dumps(normalized, ensure_ascii=False, default=str),
                 )
             )
     sheet_names = workbook.sheet_names()
