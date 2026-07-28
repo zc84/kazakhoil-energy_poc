@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client'
 import {
   AlertTriangle, ArrowRight, CalendarDays, Check, ChevronDown,
   CloudSun, Database, Download, Factory, FileCheck2, FileSpreadsheet, Filter, Gauge,
-  LayoutDashboard, LogOut, Maximize2, Menu, Moon, Plus, Sun, Thermometer,
+  Info, LayoutDashboard, LogOut, Maximize2, Menu, Moon, Plus, Sun, Thermometer,
   Trash2, TrendingDown, TrendingUp, Upload, X, Zap,
 } from 'lucide-react'
 import './styles.css'
@@ -1132,7 +1132,15 @@ function ForecastPage({ hasImports }) {
       <div className="forecast-hero-confidence">
         <div className="forecast-confidence-metric">
           <b>{confidencePercent}</b>
-          <span>уверенность модели</span>
+          <span className="forecast-confidence-label">
+            уверенность модели
+            <button type="button" aria-label="Как рассчитывается уверенность модели" aria-describedby="forecast-confidence-tooltip">
+              <Info/>
+            </button>
+            <span id="forecast-confidence-tooltip" className="forecast-confidence-tooltip" role="tooltip">
+              Составной индекс качества прогноза, а не вероятность точного совпадения. Учитывает глубину истории, полноту дневных данных, связь нагрузки с погодой, ошибку бэктеста и волатильность потребления. Диапазон: 40–90%.
+            </span>
+          </span>
         </div>
         <button className="forecast-export" type="button" onClick={exportForecast}><Download/> Экспорт</button>
       </div>
