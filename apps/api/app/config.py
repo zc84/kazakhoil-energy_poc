@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     forecast_latitude: float = 48.13
     forecast_longitude: float = 57.43
     forecast_timezone: str = "Asia/Aqtobe"
+    openai_api_key: str | None = None
 
     model_config = SettingsConfigDict(
         env_file=".env",

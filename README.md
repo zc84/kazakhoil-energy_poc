@@ -4,7 +4,8 @@
 
 - импорт ежедневных сводок и техбаланса (`.xlsx/.xls`),
 - валидация и публикация данных,
-- дэшборды ежедневного/ежемесячного потребления и аномалий.
+- дэшборды ежедневного/ежемесячного потребления и аномалий,
+- OpenAI-инсайты после нормализации и контекстный чат по загрузкам и прогнозу.
 
 ## Структура репозитория
 
@@ -29,6 +30,8 @@ docs/
 - **API**: реализованы базовые endpoints импорта и preview/publish flow.
 - **Хранилище raw-файлов**: загрузки сохраняются с checksum и metadata.
 - **Dashboard endpoints**: доступны daily/monthly/anomalies и energy-business view.
+- **AI workspace**: настройки ключа/модели/skill-промпта, сохранённая история,
+  инсайт по новому батчу и чат через Responses API.
 - **Web**: `apps/web` использует bridge на существующий UI-прототип (`src/main.jsx`) во время миграции.
 - **Worker**: пока heartbeat placeholder для локальной композиции.
 
@@ -94,6 +97,15 @@ docker compose -f infra/compose.yaml up
 - `GET /api/v1/dashboards/anomalies`
 - `GET /api/v1/dashboards/energy-business`
 
+### AI
+
+- `GET|PUT /api/v1/ai/settings`
+- `POST /api/v1/imports/{batch_id}/ai-insight`
+- `GET /api/v1/ai/insights/latest`
+- `GET|DELETE /api/v1/ai/messages`
+- `POST /api/v1/ai/chat`
+- `GET /api/v1/ai/context`
+
 ## Документация
 
 - [docs/USER_GUIDE.md](docs/USER_GUIDE.md) — практическое руководство пользователя: запуск, загрузка файлов, просмотр результатов, очистка данных.
@@ -114,5 +126,9 @@ docker compose -f infra/compose.yaml up
 - `S3_SECRET_ACCESS_KEY`
 - `S3_BUCKET_RAW_IMPORTS`
 - `APP_ENV`
+- `ENERGOPULSE_OPENAI_API_KEY` (необязательный серверный fallback)
 
-Секреты храним только в `.env` (локально) и в secret manager целевой платформы. Не коммитим credentials и raw клиентские файлы в Git.
+OpenAI API key можно задать в левом меню «Интеграции»; он сохраняется только
+на backend и никогда не возвращается целиком в браузер. Для production endpoint
+настроек необходимо закрыть аутентификацией администратора. Не коммитим
+credentials и raw клиентские файлы в Git.

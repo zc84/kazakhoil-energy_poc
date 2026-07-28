@@ -113,7 +113,7 @@ def build_import_backed_dashboard(
             }
             for batch in filtered_batches
         ],
-        "insight": "Dashboard currently reflects published import batches and row counts.",
+        "insight": "Экран собран по опубликованным файлам и обработанным данным.",
         "warnings": [],
     }
 
@@ -215,6 +215,58 @@ def _controlled_supply_source(label: str) -> dict[str, str] | None:
     if _is_controlled_supply(label):
         return {"id": re.sub(r"[^a-zа-я0-9]+", "-", normalized).strip("-"), "name": label}
     return None
+
+
+def _is_daily_load_section_start(label: str) -> bool:
+    normalized = label.casefold().replace("ё", "е").strip()
+    return (
+        ("отходящ" in normalized and "итого" not in normalized)
+        or normalized.startswith("итого по ввод")
+        or normalized.startswith("итого получено")
+        or normalized in {"итого:", "итого"}
+    )
+
+
+def _is_daily_load_section_end(label: str) -> bool:
+    normalized = label.casefold().replace("ё", "е").strip()
+    return "итого" in normalized and (
+        "отходящ" in normalized
+        or re.search(r"\bпо\s+яч", normalized) is not None
+    )
+
+
+def _is_daily_load_point(label: str) -> bool:
+    normalized = label.casefold().replace("ё", "е").strip()
+    if not normalized or _is_controlled_supply(label):
+        return False
+    if any(marker in normalized for marker in ("итого", "наименование", "реактив")):
+        return False
+    if normalized.startswith(("ввод", "юг. ввод", "пс север вв")):
+        return False
+    if re.match(r"^яч[^а-яa-z0-9]*[\d№.\s-]*ввод\b", normalized):
+        return False
+    return True
+
+
+def _daily_load_group(label: str) -> str:
+    normalized = label.casefold().replace("ё", "е")
+    if normalized.startswith("вл ") or " 35 кв" in normalized:
+        return "Отходящая линия 35 кВ"
+    if "6 кв" in normalized or normalized.startswith(("яч", "яч.")):
+        return "Объект нагрузки 6 кВ"
+    return "Объект нагрузки"
+
+
+def _daily_load_id(cells: list[object], label: str) -> str:
+    meter_number = cells[2] if len(cells) > 2 else None
+    if isinstance(meter_number, (int, float)) and not isinstance(meter_number, bool):
+        return f"daily-meter-{int(meter_number)}"
+    normalized = re.sub(
+        r"[^a-zа-я0-9]+",
+        "-",
+        label.casefold().replace("ё", "е"),
+    ).strip("-")
+    return f"daily-load-{normalized}"
 
 
 def _add_month(period: str) -> tuple[int, int, str]:
@@ -394,15 +446,30 @@ def _build_energy_forecast(
     weather_locations: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     if not monthly_series:
-        return {
-            "status": "insufficient_data",
-            "message": "Нет месячного технического баланса для прогноза.",
-            "period": None,
-            "source_period": None,
-            "series": [],
-            "scenarios": [],
-            "method": [],
-        }
+        derived_monthly_series = [
+            {
+                "period": period,
+                "total_kwh": sum(float(item.get("value") or 0) for item in points),
+                "own_share": 1.0,
+                "external_share": 0.0,
+            }
+            for period, points in sorted(daily_by_period.items())
+            if any(float(item.get("value") or 0) > 0 for item in points)
+        ]
+        if not derived_monthly_series:
+            return {
+                "status": "insufficient_data",
+                "message": "Нет суточной истории или месячного технического баланса для прогноза.",
+                "period": None,
+                "source_period": None,
+                "series": [],
+                "scenarios": [],
+                "method": [],
+            }
+        monthly_series = derived_monthly_series
+        data_basis = "daily_summary"
+    else:
+        data_basis = "technical_balance"
 
     adjustments = adjustments or []
     latest = monthly_series[-1]
@@ -677,13 +744,14 @@ def _build_energy_forecast(
         - (float(backtest_mape) * 0.5 if backtest_mape is not None else 0.06)
         - daily_volatility * 0.12,
         0.4,
-        0.9,
+        0.75 if data_basis == "daily_summary" else 0.9,
     )
     expected_change = forecast_total / latest_total - 1 if latest_total else None
     source_days_count = len(source_daily)
 
     return {
         "status": "ready",
+        "data_basis": data_basis,
         "period": forecast_period,
         "source_period": source_period,
         "source_days": source_days_count,
@@ -731,11 +799,15 @@ def _build_energy_forecast(
             {"label": "События мощности", "value": event_effect_total / baseline_total if baseline_total else 0},
         ],
         "method": [
-            "База: последний техбаланс, число дней и взвешенный тренд последних месяцев с ограничением ±15%.",
+            (
+                "База: суточная история по контрольным вводам; без техбаланса надёжность ограничена 75%."
+                if data_basis == "daily_summary"
+                else "База: последний техбаланс, число дней и взвешенный тренд последних месяцев с ограничением ±15%."
+            ),
             "Календарь: профиль каждого дня недели строится по всей доступной ежедневной истории.",
             "Погода: модель градусо-дней оценивает чувствительность нагрузки к холоду и жаре; будущая температура поступает из Open-Meteo.",
             "Сценарий: остановки, ввод и снижение мощности дают датированный эффект мощность × 24 ч × загрузка.",
-            "Контроль: средняя процентная ошибка проверки на истории определяет ширину коридора и уверенность модели.",
+            "Надёжность: средняя ошибка на исторических данных определяет ширину прогнозного диапазона.",
         ],
     }
 
@@ -896,6 +968,7 @@ def build_energy_business_dashboard(
     monthly_series.sort(key=lambda item: str(item["period"]))
 
     daily_series: list[dict[str, object]] = []
+    daily_loads_by_period: dict[str, dict[str, dict[str, object]]] = defaultdict(dict)
     negative_intervals = 0
     incomplete_intervals = 0
     for batch in daily_batches:
@@ -917,10 +990,18 @@ def build_energy_business_dashboard(
             if date_to and sheet_date > date_to:
                 continue
 
+            period = f"{year:04d}-{month:02d}"
             controlled_total = 0.0
             source_totals: dict[str, dict[str, object]] = {}
+            in_load_section = False
             for _, cells in rows:
                 label = _label(cells)
+                if _is_daily_load_section_end(label):
+                    in_load_section = False
+                    continue
+                if _is_daily_load_section_start(label):
+                    in_load_section = True
+                    continue
                 coefficient = _number(cells[4]) if len(cells) > 4 else None
                 current_reading = _number(cells[5]) if len(cells) > 5 else None
                 next_reading = _number(cells[6]) if len(cells) > 6 else None
@@ -939,11 +1020,33 @@ def build_energy_business_dashboard(
                             {"id": source_id, "name": source["name"], "value": 0.0},
                         )
                         current["value"] = float(current["value"]) + value
+                if (
+                    in_load_section
+                    and value is not None
+                    and value > 0
+                    and _is_daily_load_point(label)
+                ):
+                    load_id = _daily_load_id(cells, label)
+                    load = daily_loads_by_period[period].setdefault(
+                        load_id,
+                        {
+                            "id": load_id,
+                            "name": label,
+                            "value": 0.0,
+                            "group": _daily_load_group(label),
+                            "source": "daily_summary",
+                            "kind": "load_point",
+                            "period": period,
+                            "days": 0,
+                        },
+                    )
+                    load["value"] = float(load["value"]) + value
+                    load["days"] = int(load["days"]) + 1
 
             daily_series.append(
                 {
                     "date": sheet_date.isoformat(),
-                    "period": f"{year:04d}-{month:02d}",
+                    "period": period,
                     "value": controlled_total,
                     "sources": sorted(source_totals.values(), key=lambda item: str(item["name"])),
                     "batch_id": batch.id,
@@ -983,7 +1086,21 @@ def build_energy_business_dashboard(
     latest = monthly_series[-1] if monthly_series else None
     previous = monthly_series[-2] if len(monthly_series) > 1 else None
     latest_details = technical_details.get(str(latest["period"]), {}) if latest else {}
-    top_external = sorted(latest_details.get("external_rows", []), key=lambda item: float(item["value"]), reverse=True)[:8]
+    technical_consumers = list(latest_details.get("external_rows", []))
+    for item in technical_consumers:
+        item.setdefault("source", "technical_balance")
+        item.setdefault("kind", "external_consumer")
+    latest_daily_period = max(daily_loads_by_period.keys(), default="")
+    daily_consumers = list(daily_loads_by_period.get(latest_daily_period, {}).values())
+    consumers = technical_consumers or daily_consumers
+    consumer_source = (
+        "technical_balance"
+        if technical_consumers
+        else "daily_summary"
+        if daily_consumers
+        else None
+    )
+    top_external = sorted(consumers, key=lambda item: float(item["value"]), reverse=True)[:8]
     outgoing_35kv = sorted(latest_details.get("outgoing_35kv", []), key=lambda item: float(item["value"]), reverse=True)
     external_groups = sorted(latest_details.get("external_groups", []), key=lambda item: float(item["value"]), reverse=True)
 
@@ -1013,6 +1130,8 @@ def build_energy_business_dashboard(
             "latest_period": latest["period"] if latest else None,
             "latest_label": latest["label"] if latest else None,
             "metric_boundary": "monthly total supply; daily controlled inputs",
+            "consumer_source": consumer_source,
+            "daily_sources_semantics": "controlled_supply_inputs_not_consumers",
             "filters": {
                 "station_id": station_id,
                 "substation_id": substation_id,
@@ -1036,7 +1155,7 @@ def build_energy_business_dashboard(
         "daily_series": daily_series,
         "outgoing_35kv": outgoing_35kv,
         "external_groups": external_groups,
-        "external_consumers": sorted(latest_details.get("external_rows", []), key=lambda item: float(item["value"]), reverse=True),
+        "external_consumers": sorted(consumers, key=lambda item: float(item["value"]), reverse=True),
         "top_external_consumers": top_external,
         "reconciliation": reconciliation,
         "forecast": forecast,

@@ -97,7 +97,7 @@ class ForecastAdjustment(BaseModel):
     @model_validator(mode="after")
     def validate_period(self):
         if self.end_date < self.start_date:
-            raise ValueError("end_date must not precede start_date")
+            raise ValueError("Дата окончания не может быть раньше даты начала")
         return self
 
 
@@ -114,3 +114,48 @@ class DashboardRead(BaseModel):
     table: list[dict[str, object]]
     insight: str
     warnings: list[str]
+
+
+class AISettingsRead(BaseModel):
+    model: str
+    skill_prompt: str
+    has_api_key: bool
+    masked_api_key: str | None = None
+    models: list[dict[str, str]]
+
+
+class AISettingsUpdate(BaseModel):
+    api_key: str | None = Field(default=None, max_length=512)
+    clear_api_key: bool = False
+    model: str
+    skill_prompt: str = Field(min_length=20, max_length=8000)
+
+
+class AIChatRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=4000)
+
+
+class AIMessageRead(BaseModel):
+    id: int
+    role: str
+    content: str
+    model: str | None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class AIChatResponse(BaseModel):
+    message: AIMessageRead
+    response_id: str | None
+    model: str
+
+
+class AIInsightRead(BaseModel):
+    id: int
+    batch_id: int
+    model: str
+    content: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}

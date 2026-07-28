@@ -114,3 +114,33 @@ class ValidationIssue(TimestampMixin, Base):
     row_index: Mapped[int | None] = mapped_column(Integer)
 
     batch: Mapped[ImportBatch] = relationship(back_populates="issues")
+
+
+class AISettings(TimestampMixin, Base):
+    __tablename__ = "ai_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    api_key: Mapped[str | None] = mapped_column(Text)
+    model: Mapped[str] = mapped_column(String(64), default="gpt-5.4", nullable=False)
+    skill_prompt: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class AIInsight(TimestampMixin, Base):
+    __tablename__ = "ai_insights"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    batch_id: Mapped[int] = mapped_column(
+        ForeignKey("import_batches.id"), nullable=False, unique=True
+    )
+    model: Mapped[str] = mapped_column(String(64), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class AIMessage(TimestampMixin, Base):
+    __tablename__ = "ai_messages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    model: Mapped[str | None] = mapped_column(String(64))
+    response_id: Mapped[str | None] = mapped_column(String(128))
