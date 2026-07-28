@@ -8,8 +8,12 @@ import {
 const palette = {
   own: '#0d7a5d',
   external: '#a6d653',
-  line: '#0e8064',
-  peak: '#e45b62',
+  line: '#008b68',
+  peak: '#d94f5c',
+  actual: '#244f68',
+  temperatureActual: '#d8891f',
+  temperatureForecast: '#7651bd',
+  lowerBound: '#c09324',
   bars: ['#0d7a5d', '#35a482', '#78bf79', '#a6d653', '#d7df70', '#e8b85c'],
 }
 
@@ -60,7 +64,7 @@ function ForecastTooltip({ active, payload, label }) {
   const point = payload[0]?.payload || {}
   return <div className="energy-tooltip forecast-tooltip">
     <b>{shortDate(label)} · {point.phase === 'actual' ? 'факт' : 'прогноз'}</b>
-    {point.actual != null && <span style={{ '--series-color': '#345f73' }}>
+    {point.actual != null && <span style={{ '--series-color': palette.actual }}>
       <i/> Факт по техбалансу: <strong>{fmt(point.actual)} кВт·ч</strong>
     </span>}
     {point.actual_metered != null && <small>Контрольные вводы: {fmt(point.actual_metered)} кВт·ч</small>}
@@ -204,8 +208,8 @@ function ForecastLoad({ data }) {
     <ComposedChart data={chartData} margin={{ top: 12, right: 20, bottom: 0, left: 12 }}>
       <defs>
         <linearGradient id="actualEnergyFill" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#345f73" stopOpacity=".2"/>
-          <stop offset="100%" stopColor="#345f73" stopOpacity=".02"/>
+          <stop offset="0%" stopColor={palette.actual} stopOpacity=".24"/>
+          <stop offset="100%" stopColor={palette.actual} stopOpacity=".025"/>
         </linearGradient>
         <linearGradient id="forecastEnergyFill" x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor={palette.line} stopOpacity=".25"/>
@@ -257,7 +261,7 @@ function ForecastLoad({ data }) {
           y={item.weatherMarkerY}
           r={item.weather_anomaly ? 9 : 7}
           fill={item.weather_anomaly ? '#fff0f0' : (item.phase === 'actual' ? '#edf5f8' : '#eff8f4')}
-          stroke={item.weather_anomaly ? '#e45b62' : (item.phase === 'actual' ? '#6b93a5' : '#6ca78f')}
+          stroke={item.weather_anomaly ? palette.peak : (item.phase === 'actual' ? palette.temperatureActual : palette.temperatureForecast)}
           strokeWidth={item.weather_anomaly ? 2 : 1}
           ifOverflow="visible"
           label={{
@@ -272,11 +276,11 @@ function ForecastLoad({ data }) {
         type="monotone"
         dataKey="actual"
         name="Факт прошлого месяца"
-        stroke="#345f73"
+        stroke={palette.actual}
         strokeWidth={2.2}
         fill="url(#actualEnergyFill)"
         dot={false}
-        activeDot={{ r: 4, fill: '#345f73', stroke: '#fff', strokeWidth: 2 }}
+        activeDot={{ r: 4, fill: palette.actual, stroke: '#fff', strokeWidth: 2 }}
         connectNulls={false}
       />
       <Area
@@ -305,7 +309,7 @@ function ForecastLoad({ data }) {
         type="monotone"
         dataKey="lower"
         name="Нижняя граница"
-        stroke="#35a482"
+        stroke={palette.lowerBound}
         strokeWidth={1.4}
         strokeDasharray="5 5"
         dot={false}
@@ -315,8 +319,8 @@ function ForecastLoad({ data }) {
         type="monotone"
         dataKey="temperature_actual"
         name="Температура · факт"
-        stroke="#568eaf"
-        strokeWidth={1.8}
+        stroke={palette.temperatureActual}
+        strokeWidth={2.2}
         dot={false}
         connectNulls={false}
       />
@@ -325,9 +329,9 @@ function ForecastLoad({ data }) {
         type="monotone"
         dataKey="temperature_forecast"
         name="Температура · прогноз"
-        stroke="#8e70c1"
-        strokeWidth={1.8}
-        strokeDasharray="4 4"
+        stroke={palette.temperatureForecast}
+        strokeWidth={2.2}
+        strokeDasharray="6 4"
         dot={false}
         connectNulls={false}
       />

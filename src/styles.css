@@ -319,18 +319,22 @@ button.tr { cursor:pointer }
 .anomaly-row>div:not(.an-main) { display:flex; flex-direction:column; gap:4px }.anomaly-row>div small { color:var(--muted); font-size:7px }.anomaly-row>div b { font-size:9px }.anomaly-row strong { color:#d9575d; font-size:11px }
 .round-btn { width:27px;height:27px;display:grid;place-items:center;border:1px solid var(--border);background:var(--surface);border-radius:50%;cursor:pointer}.round-btn svg{width:13px}
 .insight-wide { display:grid; grid-template-columns:1.2fr 1fr auto; align-items:center; gap:25px; padding:18px 22px; border-radius:12px; background:linear-gradient(110deg,#082e28,#0c5b49); color:white }.insight-wide p{font-size:9px;line-height:1.6;color:#bed7d0}.insight-wide button{white-space:nowrap}
-.forecast-hero { display:flex; justify-content:space-between; align-items:center; padding:22px 25px; margin-bottom:14px; color:white; background:linear-gradient(115deg,#0a4c3e,#0a7c5d); border-radius:13px; overflow:hidden; position:relative }.forecast-hero:after{content:"";position:absolute;width:300px;height:300px;border:1px solid rgba(255,255,255,.1);border-radius:50%;right:20%;top:-140px}.forecast-hero>div:first-child{display:flex;align-items:center;gap:15px}.forecast-hero>div:first-child>span{width:43px;height:43px;display:grid;place-items:center;border-radius:11px;background:rgba(255,255,255,.12)}.forecast-hero small{display:block;color:#9dd2c1;font-size:7px;letter-spacing:.1em}.forecast-hero b{font-size:27px}.forecast-hero em{font-size:10px;font-style:normal;color:#bedbd2}.forecast-hero p{margin:4px 0 0;font-size:9px;color:#b9d7cf}.forecast-hero>div:last-child{text-align:right}.forecast-hero>div:last-child b{display:block;font-size:20px}.forecast-hero>div:last-child span{font-size:8px;color:#afd1c7}
-.forecast-export { display:inline-flex; align-items:center; gap:7px; height:34px; margin-top:12px; padding:0 12px; border:1px solid rgba(255,255,255,.18); border-radius:8px; color:white; background:rgba(255,255,255,.1); font-size:9px; font-weight:800; cursor:pointer }
+.forecast-hero { display:flex; justify-content:space-between; align-items:center; padding:22px 25px; margin-bottom:14px; color:white; background:linear-gradient(115deg,#0a4c3e,#0a7c5d); border-radius:13px; overflow:hidden; position:relative }.forecast-hero:after{content:"";position:absolute;width:300px;height:300px;border:1px solid rgba(255,255,255,.1);border-radius:50%;right:20%;top:-140px}.forecast-hero>div:first-child{display:flex;align-items:center;gap:15px}.forecast-hero>div:first-child>span{width:43px;height:43px;display:grid;place-items:center;border-radius:11px;background:rgba(255,255,255,.12)}.forecast-hero small{display:block;color:#9dd2c1;font-size:7px;letter-spacing:.1em}.forecast-hero b{font-size:27px}.forecast-hero em{font-size:10px;font-style:normal;color:#bedbd2}.forecast-hero p{margin:4px 0 0;font-size:9px;color:#b9d7cf}
+.forecast-hero-confidence { position:relative; z-index:1; display:flex; align-items:center; gap:16px }
+.forecast-confidence-metric { min-width:84px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px }
+.forecast-confidence-metric b { display:block; font-size:20px }
+.forecast-confidence-metric span { color:#afd1c7; font-size:8px; white-space:nowrap }
+.forecast-export { display:inline-flex; align-items:center; gap:7px; height:34px; margin:0; padding:0 12px; border:1px solid rgba(255,255,255,.18); border-radius:8px; color:white; background:rgba(255,255,255,.1); font-size:9px; font-weight:800; cursor:pointer }
 .forecast-export svg { width:14px; height:14px }
 .forecast-export:hover { background:rgba(255,255,255,.16) }
 .scenario-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-top:14px }.scenario { display:grid; grid-template-columns:1fr 1fr; gap:8px; align-items:end }.scenario b{font-size:18px}.scenario span{text-align:right;color:var(--muted);font-size:8px}.scenario i{grid-column:1/3;display:block;height:6px;border-radius:4px}
 .forecast-chart { height:390px }
 .forecast-chart-legend { display:flex; flex-wrap:wrap; gap:8px 16px; margin:2px 0 8px; color:var(--muted); font-size:8px; font-weight:700 }
 .forecast-chart-legend span { display:flex; align-items:center; gap:6px }
-.forecast-chart-legend i { width:18px; height:3px; border-radius:3px; background:#345f73 }
-.forecast-chart-legend .forecast i { background:#0e8064 }
-.forecast-chart-legend .weather-actual i { height:2px; background:#568eaf }
-.forecast-chart-legend .weather-forecast i { height:0; border-top:2px dashed #8e70c1; background:transparent }
+.forecast-chart-legend i { width:18px; height:3px; border-radius:3px; background:#244f68 }
+.forecast-chart-legend .forecast i { background:#008b68 }
+.forecast-chart-legend .weather-actual i { height:3px; background:#d8891f }
+.forecast-chart-legend .weather-forecast i { height:0; border-top:3px dashed #7651bd; background:transparent }
 .forecast-chart-legend .anomaly i { width:8px; height:12px; border-radius:2px; background:rgba(228,91,98,.18); border:1px solid rgba(228,91,98,.35) }
 .forecast-scenarios { grid-template-columns:1fr; margin-top:4px }
 .forecast-scenarios .scenario { min-height:76px; padding:14px; border:1px solid var(--border); border-radius:10px; background:var(--surface-2) }

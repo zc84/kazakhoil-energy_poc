@@ -1129,9 +1129,11 @@ function ForecastPage({ hasImports }) {
           <p>Календарь + история нагрузки + погода + операционные события. База: {sourcePeriodLabel}.</p>
         </div>
       </div>
-      <div>
-        <b>{confidencePercent}</b>
-        <span>уверенность модели</span>
+      <div className="forecast-hero-confidence">
+        <div className="forecast-confidence-metric">
+          <b>{confidencePercent}</b>
+          <span>уверенность модели</span>
+        </div>
         <button className="forecast-export" type="button" onClick={exportForecast}><Download/> Экспорт</button>
       </div>
     </section>
