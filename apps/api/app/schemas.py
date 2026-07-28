@@ -76,6 +76,7 @@ class EnergyBusinessDashboardRead(BaseModel):
     daily_series: list[dict[str, object]]
     outgoing_35kv: list[dict[str, object]]
     external_groups: list[dict[str, object]]
+    external_consumers: list[dict[str, object]]
     top_external_consumers: list[dict[str, object]]
     reconciliation: list[dict[str, object]]
     forecast: dict[str, object]
@@ -102,6 +103,7 @@ class ForecastAdjustment(BaseModel):
 
 class EnergyForecastRequest(BaseModel):
     adjustments: list[ForecastAdjustment] = Field(default_factory=list, max_length=50)
+    weather_locations: list[dict[str, object]] = Field(default_factory=list, max_length=32)
 
 
 class DashboardRead(BaseModel):

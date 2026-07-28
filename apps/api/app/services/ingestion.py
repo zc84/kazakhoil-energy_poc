@@ -86,7 +86,7 @@ def parse_file(filename: str, payload: bytes) -> ParsedWorkbook:
             ParsedIssue(
                 severity=ValidationSeverity.error,
                 rule_code="UNSUPPORTED_EXTENSION",
-                message=f"Unsupported file type: {suffix or 'no extension'}",
+                message=f"Формат файла не поддерживается: {suffix or 'расширение не указано'}.",
             )
         ],
     )
@@ -170,7 +170,7 @@ def _basic_issues(sheet_names: list[str], rows: list[ParsedRow]) -> list[ParsedI
             ParsedIssue(
                 severity=ValidationSeverity.error,
                 rule_code="EMPTY_FILE",
-                message="Uploaded file contains no readable rows.",
+                message="В загруженном файле нет строк, доступных для чтения.",
             )
         )
     if not sheet_names:
@@ -178,7 +178,7 @@ def _basic_issues(sheet_names: list[str], rows: list[ParsedRow]) -> list[ParsedI
             ParsedIssue(
                 severity=ValidationSeverity.error,
                 rule_code="NO_SHEETS",
-                message="Workbook contains no sheets.",
+                message="В книге нет доступных листов.",
             )
         )
     return issues
@@ -193,7 +193,7 @@ def _missing_dependency(name: str) -> ParsedWorkbook:
             ParsedIssue(
                 severity=ValidationSeverity.error,
                 rule_code="MISSING_DEPENDENCY",
-                message=f"Runtime dependency is not installed: {name}",
+            message=f"Сервис не готов к обработке этого формата: отсутствует компонент {name}.",
             )
         ],
     )

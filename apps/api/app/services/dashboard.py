@@ -391,6 +391,7 @@ def _build_energy_forecast(
     *,
     adjustments: list[dict[str, object]] | None = None,
     with_weather: bool = False,
+    weather_locations: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     if not monthly_series:
         return {
@@ -469,16 +470,99 @@ def _build_energy_forecast(
     if with_weather and all_daily:
         settings = get_settings()
         history_dates = [date.fromisoformat(str(item["date"])) for item in all_daily]
-        weather_context = load_weather_context(
-            min(history_dates),
-            max(history_dates),
-            forecast_start,
-            forecast_end,
-            latitude=settings.forecast_latitude,
-            longitude=settings.forecast_longitude,
-            timezone=settings.forecast_timezone,
-            location_name=settings.forecast_location_name,
-        )
+        normalized_locations = [
+            {
+                "name": str(item.get("name") or item.get("id") or settings.forecast_location_name),
+                "latitude": float(item.get("latitude") or settings.forecast_latitude),
+                "longitude": float(item.get("longitude") or settings.forecast_longitude),
+                "timezone": str(item.get("timezone") or settings.forecast_timezone),
+                "weight": max(0.0, float(item.get("weight") or 0)),
+            }
+            for item in (weather_locations or [])
+            if item
+        ]
+        total_location_weight = sum(float(item["weight"]) for item in normalized_locations)
+        if not normalized_locations or total_location_weight <= 0:
+            normalized_locations = [
+                {
+                    "name": settings.forecast_location_name,
+                    "latitude": settings.forecast_latitude,
+                    "longitude": settings.forecast_longitude,
+                    "timezone": settings.forecast_timezone,
+                    "weight": 1.0,
+                }
+            ]
+            total_location_weight = 1.0
+
+        location_contexts = [
+            (
+                item,
+                load_weather_context(
+                    min(history_dates),
+                    max(history_dates),
+                    forecast_start,
+                    forecast_end,
+                    latitude=float(item["latitude"]),
+                    longitude=float(item["longitude"]),
+                    timezone=str(item["timezone"]),
+                    location_name=str(item["name"]),
+                ),
+            )
+            for item in normalized_locations
+        ]
+        if len(location_contexts) == 1:
+            weather_context = location_contexts[0][1]
+        else:
+            weighted_history: dict[str, dict[str, object]] = {}
+            weighted_forecast: dict[str, dict[str, object]] = {}
+            for target_name, target in (("history", weighted_history), ("forecast", weighted_forecast)):
+                days = sorted({
+                    day
+                    for _, context in location_contexts
+                    for day in (context.get(target_name) or {}).keys()
+                })
+                for day in days:
+                    row: dict[str, object] = {"source": "Open-Meteo · взвешенно по регионам"}
+                    for field in (
+                        "temperature_2m_mean",
+                        "temperature_2m_min",
+                        "temperature_2m_max",
+                        "precipitation_sum",
+                        "wind_speed_10m_max",
+                        "temperature_normal",
+                    ):
+                        values = []
+                        for item, context in location_contexts:
+                            value = (context.get(target_name) or {}).get(day, {}).get(field)
+                            if value is not None:
+                                values.append((float(value), float(item["weight"]) / total_location_weight))
+                        row[field] = sum(value * weight for value, weight in values) if values else None
+                    code_values = [
+                        ((context.get(target_name) or {}).get(day, {}).get("weather_code"), float(item["weight"]))
+                        for item, context in location_contexts
+                        if (context.get(target_name) or {}).get(day, {}).get("weather_code") is not None
+                    ]
+                    row["weather_code"] = max(code_values, key=lambda entry: entry[1])[0] if code_values else None
+                    anomaly_labels = [
+                        str((context.get(target_name) or {}).get(day, {}).get("anomaly_label"))
+                        for _, context in location_contexts
+                        if (context.get(target_name) or {}).get(day, {}).get("is_anomaly")
+                    ]
+                    row["is_anomaly"] = bool(anomaly_labels)
+                    row["anomaly_label"] = anomaly_labels[0] if anomaly_labels else None
+                    target[day] = row
+            weather_context = {
+                "status": "ready" if all((context.get("status") == "ready") for _, context in location_contexts) else "partial",
+                "provider": "Open-Meteo",
+                "history": weighted_history,
+                "forecast": weighted_forecast,
+                "location": {
+                    "name": f"{len(location_contexts)} регионов · взвешенно",
+                    "latitude": None,
+                    "longitude": None,
+                    "timezone": "mixed",
+                },
+            }
 
     weather_history = weather_context.get("history") or {}
     weather_forecast = weather_context.get("forecast") or {}
@@ -649,9 +733,9 @@ def _build_energy_forecast(
         "method": [
             "База: последний техбаланс, число дней и взвешенный тренд последних месяцев с ограничением ±15%.",
             "Календарь: профиль каждого дня недели строится по всей доступной ежедневной истории.",
-            "Погода: HDD/CDD-регрессия оценивает чувствительность нагрузки к холоду и жаре; будущая температура приходит из Open-Meteo.",
+            "Погода: модель градусо-дней оценивает чувствительность нагрузки к холоду и жаре; будущая температура поступает из Open-Meteo.",
             "Сценарий: остановки, ввод и снижение мощности дают датированный эффект мощность × 24 ч × загрузка.",
-            "Контроль: MAPE скользящего месячного бэктеста определяет ширину коридора и уверенность модели.",
+            "Контроль: средняя процентная ошибка проверки на истории определяет ширину коридора и уверенность модели.",
         ],
     }
 
@@ -690,6 +774,7 @@ def build_energy_business_dashboard(
     date_to: date | None = None,
     forecast_adjustments: list[dict[str, object]] | None = None,
     forecast_with_weather: bool = False,
+    forecast_weather_locations: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     eligible_statuses = (ImportStatus.ready_to_publish, ImportStatus.published)
     technical_batches = db.scalars(
@@ -874,6 +959,7 @@ def build_energy_business_dashboard(
         daily_by_period,
         adjustments=forecast_adjustments,
         with_weather=forecast_with_weather,
+        weather_locations=forecast_weather_locations,
     )
 
     reconciliation: list[dict[str, object]] = []
@@ -950,6 +1036,7 @@ def build_energy_business_dashboard(
         "daily_series": daily_series,
         "outgoing_35kv": outgoing_35kv,
         "external_groups": external_groups,
+        "external_consumers": sorted(latest_details.get("external_rows", []), key=lambda item: float(item["value"]), reverse=True),
         "top_external_consumers": top_external,
         "reconciliation": reconciliation,
         "forecast": forecast,

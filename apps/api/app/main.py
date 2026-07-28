@@ -320,6 +320,7 @@ def energy_forecast(
             for adjustment in request.adjustments
         ],
         forecast_with_weather=True,
+        forecast_weather_locations=request.weather_locations,
     )
     return payload["forecast"]
 

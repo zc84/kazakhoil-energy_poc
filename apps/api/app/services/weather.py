@@ -274,11 +274,11 @@ def load_weather_context(
             "forecast": forecast,
             "normals": normals,
         }
-    except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError, KeyError, json.JSONDecodeError):
         return {
             "status": "unavailable",
             "provider": "Open-Meteo",
-            "message": f"Погодный источник временно недоступен: {type(exc).__name__}.",
+            "message": "Погодный источник временно недоступен.",
             "history": {},
             "forecast": {},
             "normals": {},

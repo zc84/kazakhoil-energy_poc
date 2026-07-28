@@ -59,7 +59,7 @@ const weatherSymbol = code => {
 
 const signedCompact = value => `${Number(value || 0) >= 0 ? '+' : '−'}${compact(Math.abs(Number(value || 0)))}`
 
-function ForecastTooltip({ active, payload, label }) {
+function ForecastTooltip({ active, payload, label, showWeather = false }) {
   if (!active || !payload?.length) return null
   const point = payload[0]?.payload || {}
   return <div className="energy-tooltip forecast-tooltip">
@@ -72,7 +72,7 @@ function ForecastTooltip({ active, payload, label }) {
       <i/> Прогноз нагрузки: <strong>{fmt(point.value)} кВт·ч</strong>
     </span>}
     {point.lower != null && <small>Коридор: {fmt(point.lower)}–{fmt(point.upper)} кВт·ч</small>}
-    {point.temperature != null && <div className="energy-tooltip-weather">
+    {showWeather && point.temperature != null && <div className="energy-tooltip-weather">
       <b>{weatherSymbol(point.weather_code)} {Number(point.temperature).toFixed(1)} °C</b>
       <span>{Number(point.precipitation || 0).toFixed(1)} мм · ветер {Number(point.wind_speed || 0).toFixed(0)} км/ч</span>
       <small>{point.phase === 'actual' ? 'Историческая погода' : 'Прогноз погоды'} · {point.weather_source}</small>
@@ -192,17 +192,23 @@ function ExternalGroups({ data }) {
   </ResponsiveContainer>
 }
 
-function ForecastLoad({ data }) {
+function ForecastLoad({ data, showWeather = false }) {
   const maxValue = data.reduce(
     (max, item) => Math.max(max, Number(item.actual || 0), Number(item.upper || item.value || 0)),
     0,
   )
-  const chartData = data.map(item => ({ ...item, weatherMarkerY: maxValue * 1.12 }))
-  const yMax = maxValue > 0 ? maxValue * 1.28 : 'auto'
+  const chartData = data.map(item => ({
+    ...item,
+    confidenceRange: item.lower == null || item.upper == null
+      ? null
+      : [Number(item.lower), Number(item.upper)],
+    weatherMarkerY: maxValue * 1.12,
+  }))
+  const yMax = maxValue > 0 ? maxValue * (showWeather ? 1.28 : 1.12) : 'auto'
   const forecastStart = chartData.find(item => item.phase === 'forecast')?.date
-  const weatherMarkers = chartData.filter(
-    (item, index) => item.weather_code != null && (item.weather_anomaly || index % 3 === 0),
-  )
+  const weatherMarkers = showWeather
+    ? chartData.filter((item, index) => item.weather_code != null && (item.weather_anomaly || index % 6 === 0))
+    : []
 
   return <ResponsiveContainer width="100%" height="100%">
     <ComposedChart data={chartData} margin={{ top: 12, right: 20, bottom: 0, left: 12 }}>
@@ -225,16 +231,16 @@ function ForecastLoad({ data }) {
         minTickGap={26}
       />
       <YAxis yAxisId="energy" domain={[0, yMax]} tickFormatter={compact} axisLine={false} tickLine={false} width={50}/>
-      <YAxis
-        yAxisId="temperature"
-        orientation="right"
-        domain={['dataMin - 4', 'dataMax + 4']}
-        tickFormatter={value => `${Math.round(value)}°`}
-        axisLine={false}
-        tickLine={false}
-        width={34}
-      />
-      <Tooltip content={<ForecastTooltip/>}/>
+      {showWeather && <YAxis
+          yAxisId="temperature"
+          orientation="right"
+          domain={['dataMin - 4', 'dataMax + 4']}
+          tickFormatter={value => `${Math.round(value)}°`}
+          axisLine={false}
+          tickLine={false}
+          width={34}
+        />}
+      <Tooltip content={<ForecastTooltip showWeather={showWeather}/>}/>
       {forecastStart && <ReferenceLine
         yAxisId="energy"
         x={forecastStart}
@@ -242,7 +248,7 @@ function ForecastLoad({ data }) {
         strokeDasharray="3 4"
         label={{ value: 'ПРОГНОЗ', position: 'insideTopRight', fill: '#75938b', fontSize: 8 }}
       />}
-      {chartData.filter(item => item.weather_anomaly).map(item => (
+      {showWeather && chartData.filter(item => item.weather_anomaly).map(item => (
         <ReferenceLine
           key={`weather-${item.date}`}
           yAxisId="energy"
@@ -274,6 +280,18 @@ function ForecastLoad({ data }) {
       <Area
         yAxisId="energy"
         type="monotone"
+        dataKey="confidenceRange"
+        name="Прогнозный коридор"
+        stroke="none"
+        fill={palette.line}
+        fillOpacity=".11"
+        dot={false}
+        activeDot={false}
+        connectNulls={false}
+      />
+      <Area
+        yAxisId="energy"
+        type="monotone"
         dataKey="actual"
         name="Факт прошлого месяца"
         stroke={palette.actual}
@@ -283,38 +301,17 @@ function ForecastLoad({ data }) {
         activeDot={{ r: 4, fill: palette.actual, stroke: '#fff', strokeWidth: 2 }}
         connectNulls={false}
       />
-      <Area
+      <Line
         yAxisId="energy"
         type="monotone"
         dataKey="value"
         name="Базовый прогноз"
         stroke={palette.line}
-        strokeWidth={2.3}
-        fill="url(#forecastEnergyFill)"
+        strokeWidth={2.8}
         dot={false}
         activeDot={{ r: 4, fill: palette.line, stroke: '#fff', strokeWidth: 2 }}
       />
-      <Line
-        yAxisId="energy"
-        type="monotone"
-        dataKey="upper"
-        name="Верхняя граница"
-        stroke={palette.peak}
-        strokeWidth={1.4}
-        strokeDasharray="5 5"
-        dot={false}
-      />
-      <Line
-        yAxisId="energy"
-        type="monotone"
-        dataKey="lower"
-        name="Нижняя граница"
-        stroke={palette.lowerBound}
-        strokeWidth={1.4}
-        strokeDasharray="5 5"
-        dot={false}
-      />
-      <Line
+      {showWeather && <Line
         yAxisId="temperature"
         type="monotone"
         dataKey="temperature_actual"
@@ -323,8 +320,8 @@ function ForecastLoad({ data }) {
         strokeWidth={2.2}
         dot={false}
         connectNulls={false}
-      />
-      <Line
+      />}
+      {showWeather && <Line
         yAxisId="temperature"
         type="monotone"
         dataKey="temperature_forecast"
@@ -334,16 +331,16 @@ function ForecastLoad({ data }) {
         strokeDasharray="6 4"
         dot={false}
         connectNulls={false}
-      />
+      />}
     </ComposedChart>
   </ResponsiveContainer>
 }
 
-export default function EnergyBusinessCharts({ kind, data, peakDay, controlLimit }) {
+export default function EnergyBusinessCharts({ kind, data, peakDay, controlLimit, showWeather }) {
   if (kind === 'monthly') return <MonthlyBalance data={data}/>
   if (kind === 'daily') return <DailyLoad data={data} peakDay={peakDay} controlLimit={controlLimit}/>
   if (kind === 'outgoing') return <Outgoing35kv data={data}/>
   if (kind === 'external') return <ExternalGroups data={data}/>
-  if (kind === 'forecast') return <ForecastLoad data={data}/>
+  if (kind === 'forecast') return <ForecastLoad data={data} showWeather={showWeather}/>
   return null
 }
