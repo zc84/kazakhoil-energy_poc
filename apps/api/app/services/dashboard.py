@@ -8,7 +8,9 @@ from datetime import date, timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..config import get_settings
 from ..models import DatasetKind, ImportBatch, ImportStatus, StagingRow
+from .weather import load_weather_context
 
 MONTHS = {
     "январ": (1, "Янв"),
@@ -242,9 +244,153 @@ def _clamp(value: float, low: float, high: float) -> float:
     return min(high, max(low, value))
 
 
+def _solve_linear_system(matrix: list[list[float]], vector: list[float]) -> list[float] | None:
+    size = len(vector)
+    augmented = [matrix[row][:] + [vector[row]] for row in range(size)]
+    for column in range(size):
+        pivot = max(range(column, size), key=lambda row: abs(augmented[row][column]))
+        if abs(augmented[pivot][column]) < 1e-9:
+            return None
+        augmented[column], augmented[pivot] = augmented[pivot], augmented[column]
+        divisor = augmented[column][column]
+        augmented[column] = [value / divisor for value in augmented[column]]
+        for row in range(size):
+            if row == column:
+                continue
+            factor = augmented[row][column]
+            augmented[row] = [
+                current - factor * pivot_value
+                for current, pivot_value in zip(augmented[row], augmented[column])
+            ]
+    return [augmented[row][-1] for row in range(size)]
+
+
+def _fit_weather_model(
+    daily_by_period: dict[str, list[dict[str, object]]],
+    weather_history: dict[str, dict[str, object]],
+) -> dict[str, object]:
+    features: list[list[float]] = []
+    targets: list[float] = []
+    for points in daily_by_period.values():
+        for point in points:
+            day = str(point["date"])
+            weather = weather_history.get(day)
+            value = float(point.get("value") or 0)
+            if not weather or value <= 0 or weather.get("temperature_2m_mean") is None:
+                continue
+            temperature = float(weather["temperature_2m_mean"])
+            item_date = date.fromisoformat(day)
+            features.append(
+                [
+                    1.0,
+                    max(0.0, 18.0 - temperature),
+                    max(0.0, temperature - 22.0),
+                    1.0 if item_date.weekday() >= 5 else 0.0,
+                ]
+            )
+            targets.append(value)
+
+    if len(features) < 14:
+        return {
+            "status": "insufficient_data",
+            "observations": len(features),
+            "heating_kwh_per_degree_day": 0.0,
+            "cooling_kwh_per_degree_day": 0.0,
+        }
+
+    size = len(features[0])
+    matrix = [[0.0] * size for _ in range(size)]
+    vector = [0.0] * size
+    for row, target in zip(features, targets):
+        for left in range(size):
+            vector[left] += row[left] * target
+            for right in range(size):
+                matrix[left][right] += row[left] * row[right]
+    for index in range(size):
+        matrix[index][index] += 1e-6
+    coefficients = _solve_linear_system(matrix, vector)
+    if coefficients is None:
+        return {
+            "status": "insufficient_data",
+            "observations": len(features),
+            "heating_kwh_per_degree_day": 0.0,
+            "cooling_kwh_per_degree_day": 0.0,
+        }
+
+    predictions = [sum(value * coefficient for value, coefficient in zip(row, coefficients)) for row in features]
+    target_mean = _mean(targets)
+    total_variance = sum((value - target_mean) ** 2 for value in targets)
+    residual_variance = sum((actual - predicted) ** 2 for actual, predicted in zip(targets, predictions))
+    r_squared = 1 - residual_variance / total_variance if total_variance else 0.0
+    daily_mean = max(1.0, target_mean)
+    return {
+        "status": "ready",
+        "observations": len(features),
+        "heating_kwh_per_degree_day": _clamp(coefficients[1], -daily_mean * 0.08, daily_mean * 0.08),
+        "cooling_kwh_per_degree_day": _clamp(coefficients[2], -daily_mean * 0.08, daily_mean * 0.08),
+        "weekend_kwh": coefficients[3],
+        "r_squared": _clamp(r_squared, 0.0, 1.0),
+    }
+
+
+def _monthly_backtest(monthly_series: list[dict[str, object]]) -> dict[str, object]:
+    errors: list[float] = []
+    points: list[dict[str, object]] = []
+    for previous, actual in zip(monthly_series, monthly_series[1:]):
+        previous_total = float(previous.get("total_kwh") or 0)
+        actual_total = float(actual.get("total_kwh") or 0)
+        if previous_total <= 0 or actual_total <= 0:
+            continue
+        predicted = previous_total / _days_in_period(str(previous["period"])) * _days_in_period(str(actual["period"]))
+        error = abs(predicted - actual_total) / actual_total
+        errors.append(error)
+        points.append(
+            {
+                "period": actual["period"],
+                "predicted_kwh": predicted,
+                "actual_kwh": actual_total,
+                "absolute_error_pct": error,
+            }
+        )
+    mape = _mean(errors) if errors else None
+    return {
+        "status": "ready" if errors else "insufficient_data",
+        "mape": mape,
+        "accuracy": _clamp(1 - mape, 0.0, 1.0) if mape is not None else None,
+        "periods": len(errors),
+        "points": points,
+    }
+
+
+def _adjustment_delta(
+    item_date: date,
+    adjustments: list[dict[str, object]],
+) -> tuple[float, list[str]]:
+    total = 0.0
+    active: list[str] = []
+    signs = {"outage": -1.0, "derating": -1.0, "addition": 1.0}
+    for adjustment in adjustments:
+        try:
+            start = date.fromisoformat(str(adjustment["start_date"]))
+            end = date.fromisoformat(str(adjustment["end_date"]))
+        except (KeyError, ValueError):
+            continue
+        if not start <= item_date <= end:
+            continue
+        capacity_kw = max(0.0, float(adjustment.get("capacity_kw") or 0))
+        utilization = _clamp(float(adjustment.get("utilization") or 0), 0.0, 1.0)
+        sign = signs.get(str(adjustment.get("kind")), 0.0)
+        total += sign * capacity_kw * 24 * utilization
+        active.append(str(adjustment.get("name") or "Операционное событие"))
+    return total, active
+
+
 def _build_energy_forecast(
     monthly_series: list[dict[str, object]],
     daily_by_period: dict[str, list[dict[str, object]]],
+    *,
+    adjustments: list[dict[str, object]] | None = None,
+    with_weather: bool = False,
 ) -> dict[str, object]:
     if not monthly_series:
         return {
@@ -257,6 +403,7 @@ def _build_energy_forecast(
             "method": [],
         }
 
+    adjustments = adjustments or []
     latest = monthly_series[-1]
     source_period = str(latest["period"])
     forecast_year, forecast_month, forecast_period = _add_month(source_period)
@@ -291,49 +438,163 @@ def _build_energy_forecast(
     daily_volatility = _stdev(daily_values) / source_daily_avg if source_daily_avg else 0.0
 
     day_count_adjustment = forecast_days / source_days if source_days else 1.0
-    base_total = latest_total * day_count_adjustment
-    forecast_total = max(0.0, base_total * (1 + trend_rate))
-    range_pct = _clamp(0.045 + daily_volatility * 0.25 + (0.045 if len(monthly_series) < 3 else 0.0), 0.06, 0.22)
-    low_total = forecast_total * (1 - range_pct)
-    high_total = forecast_total * (1 + range_pct)
+    baseline_total = max(0.0, latest_total * day_count_adjustment * (1 + trend_rate))
 
     weekday_values: dict[int, list[float]] = defaultdict(list)
-    for item in source_daily:
-        item_date = date.fromisoformat(str(item["date"]))
-        value = float(item.get("value") or 0)
-        if value > 0:
-            weekday_values[item_date.weekday()].append(value)
+    for period_points in daily_by_period.values():
+        for item in period_points:
+            item_date = date.fromisoformat(str(item["date"]))
+            value = float(item.get("value") or 0)
+            if value > 0:
+                weekday_values[item_date.weekday()].append(value)
 
     forecast_daily_base: list[float] = []
     for day in range(1, forecast_days + 1):
         item_date = date(forecast_year, forecast_month, day)
         weekday_avg = _mean(weekday_values.get(item_date.weekday(), []))
-        forecast_daily_base.append(weekday_avg or source_daily_avg or (forecast_total / forecast_days if forecast_days else 0.0))
+        forecast_daily_base.append(weekday_avg or source_daily_avg or (baseline_total / forecast_days if forecast_days else 0.0))
 
-    latest_controlled = float(latest.get("controlled_kwh") or 0)
-    target_daily_total = latest_controlled * day_count_adjustment * (1 + trend_rate)
-    if not target_daily_total and source_daily_total:
-        target_daily_total = source_daily_total * day_count_adjustment * (1 + trend_rate)
     profile_total = sum(forecast_daily_base)
-    scale = target_daily_total / profile_total if profile_total else 1.0
+    scale = baseline_total / profile_total if profile_total else 1.0
+
+    forecast_start = date(forecast_year, forecast_month, 1)
+    forecast_end = date(forecast_year, forecast_month, forecast_days)
+    weather_context: dict[str, object] = {
+        "status": "disabled",
+        "provider": "Open-Meteo",
+        "forecast": {},
+        "history": {},
+    }
+    all_daily = [item for points in daily_by_period.values() for item in points]
+    if with_weather and all_daily:
+        settings = get_settings()
+        history_dates = [date.fromisoformat(str(item["date"])) for item in all_daily]
+        weather_context = load_weather_context(
+            min(history_dates),
+            max(history_dates),
+            forecast_start,
+            forecast_end,
+            latitude=settings.forecast_latitude,
+            longitude=settings.forecast_longitude,
+            timezone=settings.forecast_timezone,
+            location_name=settings.forecast_location_name,
+        )
+
+    weather_history = weather_context.get("history") or {}
+    weather_forecast = weather_context.get("forecast") or {}
+    weather_model = _fit_weather_model(daily_by_period, weather_history)
+    history_daily_mean = source_daily_avg or (_mean([float(item.get("value") or 0) for item in all_daily]) if all_daily else 0)
+    model_daily_mean = baseline_total / forecast_days if forecast_days else 0
+    boundary_scale = model_daily_mean / history_daily_mean if history_daily_mean else 1.0
+
+    source_boundary_scale = latest_total / source_daily_total if source_daily_total else 1.0
+    history_series = []
+    for item in source_daily:
+        item_date = str(item["date"])
+        weather = weather_history.get(item_date) or {}
+        metered_value = float(item.get("value") or 0)
+        history_series.append(
+            {
+                "date": item_date,
+                "phase": "actual",
+                "actual": metered_value * source_boundary_scale,
+                "actual_metered": metered_value,
+                "temperature": weather.get("temperature_2m_mean"),
+                "temperature_actual": weather.get("temperature_2m_mean"),
+                "temperature_forecast": None,
+                "temperature_min": weather.get("temperature_2m_min"),
+                "temperature_max": weather.get("temperature_2m_max"),
+                "precipitation": weather.get("precipitation_sum"),
+                "wind_speed": weather.get("wind_speed_10m_max"),
+                "weather_code": weather.get("weather_code"),
+                "weather_source": weather.get("source"),
+                "weather_anomaly": bool(weather.get("is_anomaly")),
+                "weather_anomaly_label": weather.get("anomaly_label"),
+            }
+        )
 
     forecast_series = []
     running_total = 0.0
+    weather_effect_total = 0.0
+    event_effect_total = 0.0
     for index, base_value in enumerate(forecast_daily_base):
-        item_date = date(forecast_year, forecast_month, 1) + timedelta(days=index)
-        value = max(0.0, base_value * scale)
+        item_date = forecast_start + timedelta(days=index)
+        weather = weather_forecast.get(item_date.isoformat()) or {}
+        temperature = weather.get("temperature_2m_mean")
+        normal_temperature = weather.get("temperature_normal")
+        weather_delta = 0.0
+        if (
+            weather_model.get("status") == "ready"
+            and temperature is not None
+            and normal_temperature is not None
+        ):
+            actual_hdd = max(0.0, 18.0 - float(temperature))
+            normal_hdd = max(0.0, 18.0 - float(normal_temperature))
+            actual_cdd = max(0.0, float(temperature) - 22.0)
+            normal_cdd = max(0.0, float(normal_temperature) - 22.0)
+            weather_delta = boundary_scale * (
+                float(weather_model["heating_kwh_per_degree_day"]) * (actual_hdd - normal_hdd)
+                + float(weather_model["cooling_kwh_per_degree_day"]) * (actual_cdd - normal_cdd)
+            )
+        scaled_base = base_value * scale
+        weather_delta = _clamp(weather_delta, -scaled_base * 0.2, scaled_base * 0.2)
+        event_delta, active_events = _adjustment_delta(item_date, adjustments)
+        value = max(0.0, scaled_base + weather_delta + event_delta)
+        weather_effect_total += weather_delta
+        event_effect_total += event_delta
         running_total += value
         forecast_series.append(
             {
                 "date": item_date.isoformat(),
+                "phase": "forecast",
+                "actual": None,
                 "value": value,
-                "lower": value * (1 - range_pct),
-                "upper": value * (1 + range_pct),
                 "cumulative": running_total,
+                "baseline": scaled_base,
+                "weather_delta_kwh": weather_delta,
+                "event_delta_kwh": event_delta,
+                "active_events": active_events,
+                "temperature": temperature,
+                "temperature_actual": None,
+                "temperature_forecast": temperature,
+                "temperature_min": weather.get("temperature_2m_min"),
+                "temperature_max": weather.get("temperature_2m_max"),
+                "precipitation": weather.get("precipitation_sum"),
+                "wind_speed": weather.get("wind_speed_10m_max"),
+                "weather_code": weather.get("weather_code"),
+                "weather_source": weather.get("source"),
+                "weather_anomaly": bool(weather.get("is_anomaly")),
+                "weather_anomaly_label": weather.get("anomaly_label"),
             }
         )
 
-    confidence = _clamp(0.52 + min(len(monthly_series), 6) * 0.045 + min(len(daily_values), 31) * 0.004 - daily_volatility * 0.16, 0.45, 0.88)
+    forecast_total = sum(float(item["value"]) for item in forecast_series)
+    backtest = _monthly_backtest(monthly_series)
+    backtest_mape = backtest.get("mape")
+    range_pct = _clamp(
+        0.045
+        + daily_volatility * 0.2
+        + (float(backtest_mape) * 0.65 if backtest_mape is not None else 0.06)
+        + (0.025 if weather_context.get("status") != "ready" else 0),
+        0.06,
+        0.25,
+    )
+    low_total = forecast_total * (1 - range_pct)
+    high_total = forecast_total * (1 + range_pct)
+    for item in forecast_series:
+        item["lower"] = float(item["value"]) * (1 - range_pct)
+        item["upper"] = float(item["value"]) * (1 + range_pct)
+
+    confidence = _clamp(
+        0.48
+        + min(len(monthly_series), 6) * 0.045
+        + min(len(daily_values), 31) * 0.003
+        + float(weather_model.get("r_squared") or 0) * 0.08
+        - (float(backtest_mape) * 0.5 if backtest_mape is not None else 0.06)
+        - daily_volatility * 0.12,
+        0.4,
+        0.9,
+    )
     expected_change = forecast_total / latest_total - 1 if latest_total else None
     source_days_count = len(source_daily)
 
@@ -354,7 +615,23 @@ def _build_energy_forecast(
         "external_kwh": forecast_total * latest_external_share,
         "own_share": latest_own_share,
         "external_share": latest_external_share,
-        "daily_controlled_total_kwh": target_daily_total,
+        "baseline_total_kwh": baseline_total,
+        "weather_effect_kwh": weather_effect_total,
+        "event_effect_kwh": event_effect_total,
+        "daily_controlled_total_kwh": forecast_total,
+        "backtest": backtest,
+        "weather": {
+            "status": weather_context.get("status"),
+            "provider": weather_context.get("provider"),
+            "location": weather_context.get("location"),
+            "message": weather_context.get("message"),
+            "model": weather_model,
+            "anomaly_days": sum(1 for item in forecast_series if item["weather_anomaly"]),
+            "history_anomaly_days": sum(1 for item in history_series if item["weather_anomaly"]),
+        },
+        "adjustments": adjustments,
+        "history_series": history_series,
+        "combined_series": [*history_series, *forecast_series],
         "series": forecast_series,
         "scenarios": [
             {"name": "Экономный", "value": low_total, "delta_pct": low_total / latest_total - 1 if latest_total else None},
@@ -366,12 +643,15 @@ def _build_energy_forecast(
             {"label": "Дней в прогнозе", "value": forecast_days},
             {"label": "Дней дневного профиля", "value": source_days_count},
             {"label": "Тренд", "value": trend_rate},
+            {"label": "Погодная поправка", "value": weather_effect_total / baseline_total if baseline_total else 0},
+            {"label": "События мощности", "value": event_effect_total / baseline_total if baseline_total else 0},
         ],
         "method": [
-            "База: общий расход последнего технического баланса, нормированный на число дней следующего месяца.",
-            "Тренд: взвешенное изменение последних месячных итогов с ограничением ±15%.",
-            "Дневной профиль: форма нагрузки последнего доступного месяца по дням недели.",
-            "Коридор: дневная волатильность и длина доступной истории.",
+            "База: последний техбаланс, число дней и взвешенный тренд последних месяцев с ограничением ±15%.",
+            "Календарь: профиль каждого дня недели строится по всей доступной ежедневной истории.",
+            "Погода: HDD/CDD-регрессия оценивает чувствительность нагрузки к холоду и жаре; будущая температура приходит из Open-Meteo.",
+            "Сценарий: остановки, ввод и снижение мощности дают датированный эффект мощность × 24 ч × загрузка.",
+            "Контроль: MAPE скользящего месячного бэктеста определяет ширину коридора и уверенность модели.",
         ],
     }
 
@@ -408,6 +688,8 @@ def build_energy_business_dashboard(
     substation_id: str | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
+    forecast_adjustments: list[dict[str, object]] | None = None,
+    forecast_with_weather: bool = False,
 ) -> dict[str, object]:
     eligible_statuses = (ImportStatus.ready_to_publish, ImportStatus.published)
     technical_batches = db.scalars(
@@ -587,7 +869,12 @@ def build_energy_business_dashboard(
     daily_by_period: dict[str, list[dict[str, object]]] = defaultdict(list)
     for point in daily_series:
         daily_by_period[str(point["period"])].append(point)
-    forecast = _build_energy_forecast(monthly_series, daily_by_period)
+    forecast = _build_energy_forecast(
+        monthly_series,
+        daily_by_period,
+        adjustments=forecast_adjustments,
+        with_weather=forecast_with_weather,
+    )
 
     reconciliation: list[dict[str, object]] = []
     for month in monthly_series:

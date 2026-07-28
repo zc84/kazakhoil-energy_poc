@@ -30,7 +30,7 @@
 
 * { box-sizing: border-box }
 body { margin: 0; min-width: 320px; min-height: 100vh; background: var(--bg); color: var(--text) }
-button, input { font: inherit }
+button, input, select { font: inherit }
 button { color: inherit }
 button:focus-visible, input:focus-visible { outline: 3px solid rgba(24,167,123,.25); outline-offset: 2px }
 svg { width: 20px; height: 20px }
@@ -142,10 +142,11 @@ svg { width: 20px; height: 20px }
   linear-gradient(135deg, #06211e 0%, #0c4c40 50%, #126f5a 100%)
 }
 .overview-hero-copy,.overview-hero-panel { position:relative; z-index:1 }
+.overview-hero-copy { display:flex; flex-direction:column }
 .overview-hero-copy h3 { margin:10px 0 10px; max-width:720px; font-size:clamp(28px, 4vw, 42px); line-height:1.05; letter-spacing:-.05em }
 .overview-hero.is-empty .overview-hero-copy h3 { font-size:clamp(24px, 2.6vw, 32px); letter-spacing:-.035em }
 .overview-hero-copy p { margin:0; max-width:690px; font-size:14px; line-height:1.75; color:#c4ddd5 }
-.overview-hero-actions { display:flex; align-items:center; gap:14px; margin-top:24px }
+.overview-hero-actions { display:flex; align-items:center; gap:14px; margin-top:auto; padding-top:36px }
 .hero-primary { display:inline-flex; align-items:center; gap:9px; height:48px; padding:0 18px; border:0; border-radius:999px; background:#a7d94b; color:#14342c; font-size:12px; font-weight:800; cursor:pointer; box-shadow:0 14px 30px rgba(13,31,26,.25) }
 .hero-primary svg { width:16px }
 .hero-primary:hover { transform:translateY(-1px) }
@@ -323,7 +324,14 @@ button.tr { cursor:pointer }
 .forecast-export svg { width:14px; height:14px }
 .forecast-export:hover { background:rgba(255,255,255,.16) }
 .scenario-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-top:14px }.scenario { display:grid; grid-template-columns:1fr 1fr; gap:8px; align-items:end }.scenario b{font-size:18px}.scenario span{text-align:right;color:var(--muted);font-size:8px}.scenario i{grid-column:1/3;display:block;height:6px;border-radius:4px}
-.forecast-chart { height:335px }
+.forecast-chart { height:390px }
+.forecast-chart-legend { display:flex; flex-wrap:wrap; gap:8px 16px; margin:2px 0 8px; color:var(--muted); font-size:8px; font-weight:700 }
+.forecast-chart-legend span { display:flex; align-items:center; gap:6px }
+.forecast-chart-legend i { width:18px; height:3px; border-radius:3px; background:#345f73 }
+.forecast-chart-legend .forecast i { background:#0e8064 }
+.forecast-chart-legend .weather-actual i { height:2px; background:#568eaf }
+.forecast-chart-legend .weather-forecast i { height:0; border-top:2px dashed #8e70c1; background:transparent }
+.forecast-chart-legend .anomaly i { width:8px; height:12px; border-radius:2px; background:rgba(228,91,98,.18); border:1px solid rgba(228,91,98,.35) }
 .forecast-scenarios { grid-template-columns:1fr; margin-top:4px }
 .forecast-scenarios .scenario { min-height:76px; padding:14px; border:1px solid var(--border); border-radius:10px; background:var(--surface-2) }
 .forecast-scenarios .scenario b { font-size:24px; letter-spacing:-.04em }
@@ -332,11 +340,35 @@ button.tr { cursor:pointer }
 .forecast-driver-list div { display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:39px; padding:0 12px; background:var(--surface) }
 .forecast-driver-list span { color:var(--muted); font-size:8px; font-weight:800; letter-spacing:.06em; text-transform:uppercase }
 .forecast-driver-list b { font-size:10px }
-.forecast-method { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px }
+.forecast-method { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:10px }
 .forecast-method div { min-height:92px; display:grid; grid-template-columns:32px 1fr; gap:10px; align-items:start; padding:14px; border:1px solid var(--border); border-radius:10px; background:var(--surface-2) }
 .forecast-method b { width:32px; height:32px; display:grid; place-items:center; border-radius:9px; color:#0b765b; background:#dff2ea; font-size:13px }
 .forecast-method span { color:var(--muted); font-size:10px; line-height:1.6 }
 :root[data-theme="dark"] .forecast-method b { color:#a7dfcc; background:#173d33 }
+.forecast-recalculating { color:#0b765b; font-size:9px; font-weight:800 }
+.forecast-adjustment-form { display:grid; grid-template-columns:1.4fr 1fr .8fr .7fr 1fr 1fr auto; gap:9px; align-items:end }
+.forecast-adjustment-form label { min-width:0; display:grid; gap:6px }
+.forecast-adjustment-form label span { color:var(--muted); font-size:8px; font-weight:800; letter-spacing:.06em; text-transform:uppercase }
+.forecast-adjustment-form input,.forecast-adjustment-form select { width:100%; min-width:0; height:38px; padding:0 10px; border:1px solid var(--border); border-radius:8px; outline:0; color:var(--text); background:var(--surface-2); font-size:10px }
+.forecast-adjustment-form input:focus,.forecast-adjustment-form select:focus { border-color:#18a77b; box-shadow:0 0 0 3px rgba(24,167,123,.1) }
+.forecast-add { height:38px; display:flex; align-items:center; gap:6px; padding:0 13px; border:0; border-radius:8px; color:white; background:#0c755a; font-size:9px; font-weight:800; cursor:pointer }
+.forecast-add svg { width:14px }
+.forecast-adjustment-list { display:grid; gap:1px; margin-top:14px; overflow:hidden; border:1px solid var(--border); border-radius:9px; background:var(--border) }
+.forecast-adjustment-list>div { min-height:52px; display:grid; grid-template-columns:5px minmax(180px,1fr) auto 30px; gap:12px; align-items:center; padding:7px 12px 7px 0; background:var(--surface) }
+.forecast-adjustment-list i { width:5px; height:100%; background:#df5c62 }.forecast-adjustment-list i.addition{background:#39a47d}.forecast-adjustment-list i.derating{background:#e6a83f}
+.forecast-adjustment-list span { display:flex; flex-direction:column; gap:3px }.forecast-adjustment-list b{font-size:10px}.forecast-adjustment-list small{color:var(--muted);font-size:8px}.forecast-adjustment-list strong{font-size:9px}
+.forecast-adjustment-list button { width:28px;height:28px;display:grid;place-items:center;border:1px solid var(--border);border-radius:7px;background:var(--surface-2);color:var(--muted);cursor:pointer}.forecast-adjustment-list button svg{width:13px}
+.forecast-adjustment-empty { min-height:54px; margin-top:14px; display:flex; align-items:center; gap:10px; padding:0 13px; border:1px dashed var(--border); border-radius:9px; color:var(--muted); background:var(--surface-2); font-size:9px }.forecast-adjustment-empty svg{width:16px}
+.forecast-weather-status { display:grid; grid-template-columns:40px repeat(4,minmax(0,1fr)); gap:16px; align-items:center; min-height:66px; padding:11px 14px; border:1px solid var(--border); border-radius:10px; background:var(--surface-2) }
+.forecast-weather-status>svg { width:38px;height:38px;padding:9px;border-radius:10px;color:#287eaa;background:#e2f1f8}.forecast-weather-status.offline>svg{color:#b57b17;background:#fff0d3}
+.forecast-weather-status>div { min-width:0; display:flex; flex-direction:column; gap:5px }.forecast-weather-status small{color:var(--muted);font-size:7px;font-weight:800;letter-spacing:.07em}.forecast-weather-status b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:9px}
+.forecast-weather-dot circle { fill:var(--surface);stroke:#9bb4ad;stroke-width:1 }.forecast-weather-dot text{font-size:11px}.forecast-weather-dot.anomaly circle{fill:#fff0f0;stroke:#e45b62;stroke-width:2}
+.energy-tooltip-weather { display:grid; gap:4px; margin-top:7px; padding-top:7px; border-top:1px solid var(--border) }.energy-tooltip-weather>b{margin:0;font-size:10px}.energy-tooltip-weather span{font-size:8px}.energy-tooltip-weather strong{color:#d94f57;font-size:8px}.energy-tooltip-weather small{color:var(--muted);font-size:7px}
+.forecast-tooltip>small { display:block; margin-top:4px; color:var(--muted); font-size:7px }
+.forecast-scenario-layout { display:grid; grid-template-columns:1.35fr 1fr; gap:16px; align-items:start }
+.combined-scenario-card .forecast-scenarios { grid-template-columns:repeat(3,minmax(0,1fr)); margin-top:0 }
+.combined-scenario-card .forecast-driver-list { grid-template-columns:repeat(2,minmax(0,1fr)); margin-top:0 }
+.combined-scenario-card .forecast-driver-list div { min-width:0 }
 .recon-strip { display:grid; grid-template-columns:1.3fr 1fr 30px 1fr 1fr; align-items:center; gap:20px; background:var(--surface); border:1px solid var(--border); box-shadow:var(--shadow); border-radius:12px; padding:18px 20px; margin-bottom:14px }.recon-strip>div{display:flex;flex-direction:column}.recon-strip>div:first-child{flex-direction:row;align-items:center;gap:10px}.recon-strip>div:first-child>svg{width:32px;height:32px;padding:8px;border-radius:50%;background:#dff2ea;color:#08765d}.recon-strip span{font-size:8px;color:var(--muted)}.recon-strip b{font-size:11px;margin-top:3px}.recon-strip small{font-size:7px;color:var(--muted);margin-top:2px}.recon-strip>svg{width:15px;color:var(--muted)}.recon-total{border-left:1px solid var(--border);padding-left:20px}.recon-total b{color:#d85a5f}
 .recon-table .tr { grid-template-columns:1.1fr 1fr 1fr .7fr .7fr .8fr }.data-table .tr>span:first-child svg{color:#168660}.bad-text{color:#d9575d!important;font-weight:800}
 .overview-status-table .tr { grid-template-columns:1fr 120px 1.4fr }
@@ -535,6 +567,9 @@ button.tr { cursor:pointer }
   .kpi-grid{grid-template-columns:repeat(2,1fr)}.span-8,.span-7{grid-column:span 12}.span-4,.span-5{grid-column:span 12}.donut-wrap{max-width:500px;margin:auto}.filter-bar .desktop-filter{display:none}
   .energy-kpis{grid-template-columns:repeat(2,1fr)}.energy-method{grid-template-columns:repeat(2,1fr)}.energy-method small{padding:12px 0 0;border-left:0;border-top:1px solid var(--border);grid-column:1/3}
   .forecast-method{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .forecast-scenario-layout{grid-template-columns:1fr}.combined-scenario-card .forecast-driver-list{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .forecast-adjustment-form{grid-template-columns:repeat(3,minmax(0,1fr))}.forecast-add{justify-content:center}
+  .forecast-weather-status{grid-template-columns:40px repeat(2,minmax(0,1fr))}.forecast-weather-status>div:last-child{grid-column:2/4}
   .load-signal-list.wide{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
 @media(max-width:760px){
@@ -552,6 +587,8 @@ button.tr { cursor:pointer }
   .energy-kpis{grid-template-columns:1fr 1fr;gap:9px}.energy-kpis article{min-height:136px;padding:15px}.energy-kpis article>strong{font-size:25px}.energy-grid>.card{margin-bottom:10px}.energy-chart-card,.energy-chart-row-primary,.energy-chart-row-secondary{min-height:auto}.energy-chart{height:280px}.energy-ranking{overflow-x:auto;margin-left:-15px;margin-right:-15px}.energy-ranking>div{min-width:680px}.energy-reconciliation{margin-left:-15px;margin-right:-15px}.energy-method{grid-template-columns:1fr}.energy-method small{grid-column:auto}.peak-chip{display:none}
   .data-health{grid-template-columns:64px 1fr}.load-signal-summary,.load-signal-summary.wide{grid-template-columns:1fr}.load-signal-list,.load-signal-list.wide{grid-template-columns:1fr}.peak-anomaly-chart{height:280px}
   .forecast-method{grid-template-columns:1fr}
+  .forecast-chart{height:360px}.forecast-chart-legend{gap:7px 12px}.combined-scenario-card .forecast-scenarios{grid-template-columns:1fr}.combined-scenario-card .forecast-driver-list{grid-template-columns:1fr 1fr}
+  .forecast-adjustment-form{grid-template-columns:1fr 1fr}.forecast-adjustment-form label:first-child{grid-column:1/3}.forecast-add{grid-column:1/3}.forecast-adjustment-list>div{grid-template-columns:5px 1fr 28px}.forecast-adjustment-list strong{grid-column:2}.forecast-weather-status{grid-template-columns:36px 1fr}.forecast-weather-status>div:last-child{grid-column:auto}.forecast-weather-status>svg{width:34px;height:34px}
 }
 @media(max-width:450px){
   .kpi-grid,.kpi-grid.three{grid-template-columns:1fr}.topbar h1{font-size:16px}.filter-bar.compact{display:none}.segmented{overflow:auto}.anomaly-summary{grid-template-columns:1fr 1fr}.login-panel h2{font-size:31px}.overview-hero-copy h3{font-size:26px}.hero-primary{width:100%;justify-content:center}

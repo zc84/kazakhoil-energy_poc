@@ -2,8 +2,9 @@ import React, { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import {
   AlertTriangle, ArrowRight, CalendarDays, Check, ChevronDown,
-  Database, Download, Factory, FileCheck2, FileSpreadsheet, Filter, LayoutDashboard,
-  LogOut, Maximize2, Menu, Moon, Sun, TrendingDown, TrendingUp, Upload, X, Zap,
+  CloudSun, Database, Download, Factory, FileCheck2, FileSpreadsheet, Filter, Gauge,
+  LayoutDashboard, LogOut, Maximize2, Menu, Moon, Plus, Sun, Thermometer,
+  Trash2, TrendingDown, TrendingUp, Upload, X, Zap,
 } from 'lucide-react'
 import './styles.css'
 
@@ -986,8 +987,27 @@ function PeaksAndAnomaliesPage({ hasImports }) {
 
 function ForecastPage({ hasImports }) {
   const [result, setResult] = useState(null)
+  const [adjustments, setAdjustments] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('energy-forecast-adjustments') || '[]')
+    } catch {
+      return []
+    }
+  })
+  const [draft, setDraft] = useState({
+    name: '',
+    kind: 'outage',
+    capacity_kw: '',
+    utilization_pct: '75',
+    start_date: '',
+    end_date: '',
+  })
   const [loading, setLoading] = useState(hasImports)
   const [error, setError] = useState('')
+
+  useEffect(() => {
+    localStorage.setItem('energy-forecast-adjustments', JSON.stringify(adjustments))
+  }, [adjustments])
 
   useEffect(() => {
     if (!hasImports) {
@@ -1001,7 +1021,11 @@ function ForecastPage({ hasImports }) {
     setError('')
     ;(async () => {
       try {
-        const response = await apiFetch('/api/v1/dashboards/energy-business')
+        const response = await apiFetch('/api/v1/forecasts/energy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ adjustments }),
+        })
         if (!response.ok) throw new Error(`HTTP ${response.status}`)
         const data = await parseJsonResponse(response)
         if (active) setResult(data)
@@ -1015,7 +1039,18 @@ function ForecastPage({ hasImports }) {
     return () => {
       active = false
     }
-  }, [hasImports])
+  }, [hasImports, adjustments])
+
+  useEffect(() => {
+    if (!result?.period || draft.start_date) return
+    const [year, month] = result.period.split('-').map(Number)
+    const end = new Date(Date.UTC(year, month, 0)).toISOString().slice(0, 10)
+    setDraft(current => ({
+      ...current,
+      start_date: `${result.period}-01`,
+      end_date: end,
+    }))
+  }, [result?.period, draft.start_date])
 
   if (!hasImports) {
     return <Card title="Прогнозирование пока недоступно">
@@ -1023,11 +1058,11 @@ function ForecastPage({ hasImports }) {
     </Card>
   }
 
-  if (loading) {
-    return <div className="result-loading"><span/><b>Считаем прогноз по последнему месяцу…</b></div>
+  if (loading && !result) {
+    return <div className="result-loading"><span/><b>Считаем прогноз с погодой и проверяем историю…</b></div>
   }
 
-  const forecast = result?.forecast
+  const forecast = result
   if (error || !forecast || forecast.status !== 'ready') {
     return <Card title="Прогнозирование пока недоступно">
       <EmptyState title="Недостаточно данных" text={forecast?.message || 'Нужен хотя бы один технический баланс с распознанным месяцем.'}/>
@@ -1041,16 +1076,43 @@ function ForecastPage({ hasImports }) {
   const sourcePeriodLabel = fmtMonthYear(forecast.source_period)
   const forecastPeriodLabel = fmtMonthYear(forecast.period)
   const mainScenario = forecast.scenarios?.find(item => item.name === 'Базовый') || forecast.scenarios?.[1]
+  const backtestAccuracy = forecast.backtest?.accuracy
+  const weatherReady = forecast.weather?.status === 'ready'
+  const combinedSeries = forecast.combined_series || forecast.series || []
+  const totalWeatherAnomalies = Number(forecast.weather?.history_anomaly_days || 0) + Number(forecast.weather?.anomaly_days || 0)
+  const signedEnergy = value => `${Number(value || 0) >= 0 ? '+' : '−'}${mln(Math.abs(Number(value || 0)))}`
+  const addAdjustment = event => {
+    event.preventDefault()
+    const capacity = Number(draft.capacity_kw)
+    const utilization = Number(draft.utilization_pct) / 100
+    if (!draft.name.trim() || capacity <= 0 || utilization <= 0 || !draft.start_date || !draft.end_date) return
+    setAdjustments(current => [...current, {
+      id: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${current.length}`,
+      name: draft.name.trim(),
+      kind: draft.kind,
+      capacity_kw: capacity,
+      utilization,
+      start_date: draft.start_date,
+      end_date: draft.end_date,
+    }])
+    setDraft(current => ({ ...current, name: '', capacity_kw: '' }))
+  }
   const exportForecast = () => {
     downloadCsv(
       `forecast-${forecast.period}.csv`,
       [
-        ['Дата', 'Базовый прогноз кВт·ч', 'Нижняя граница кВт·ч', 'Верхняя граница кВт·ч', 'Накопительно кВт·ч'],
-        ...(forecast.series || []).map(item => [
+        ['Дата', 'Период', 'Факт кВт·ч', 'Прогноз кВт·ч', 'Нижняя граница кВт·ч', 'Верхняя граница кВт·ч', 'Температура °C', 'Источник погоды', 'Погодная поправка кВт·ч', 'События кВт·ч', 'Накопительно кВт·ч'],
+        ...combinedSeries.map(item => [
           item.date,
-          Math.round(Number(item.value || 0)),
-          Math.round(Number(item.lower || 0)),
-          Math.round(Number(item.upper || 0)),
+          item.phase === 'actual' ? 'Факт' : 'Прогноз',
+          item.actual == null ? '' : Math.round(Number(item.actual)),
+          item.value == null ? '' : Math.round(Number(item.value)),
+          item.lower == null ? '' : Math.round(Number(item.lower)),
+          item.upper == null ? '' : Math.round(Number(item.upper)),
+          item.temperature ?? '',
+          item.weather_source || '',
+          Math.round(Number(item.weather_delta_kwh || 0)),
+          Math.round(Number(item.event_delta_kwh || 0)),
           Math.round(Number(item.cumulative || 0)),
         ]),
       ],
@@ -1064,7 +1126,7 @@ function ForecastPage({ hasImports }) {
         <div>
           <small>ПРОГНОЗ НА {String(forecastPeriodLabel).toUpperCase()}</small>
           <b>{mln(forecast.forecast_total_kwh)} млн кВт·ч</b>
-          <p>Расчёт построен по последнему загруженному месяцу: {sourcePeriodLabel}.</p>
+          <p>Календарь + история нагрузки + погода + операционные события. База: {sourcePeriodLabel}.</p>
         </div>
       </div>
       <div>
@@ -1075,47 +1137,118 @@ function ForecastPage({ hasImports }) {
     </section>
 
     <div className="kpi-grid">
-      <KpiCard icon={Zap} label="Базовый прогноз" value={mln(forecast.forecast_total_kwh)} unit="млн кВт·ч" note={`${signedPercent(forecast.expected_change_pct)} к последнему месяцу`} />
-      <KpiCard icon={Factory} label="Собственное КОА" value={mln(forecast.own_kwh)} unit="млн кВт·ч" note={`${percent(forecast.own_share)} от прогноза`} tone="blue" />
-      <KpiCard icon={Database} label="Внешние" value={mln(forecast.external_kwh)} unit="млн кВт·ч" note={`${percent(forecast.external_share)} от прогноза`} tone="yellow" />
-      <KpiCard icon={CalendarDays} label="Профиль нагрузки" value={fmt(forecast.source_days)} unit="дн." note="взято из последнего месяца" tone="green" />
+      <KpiCard icon={Zap} label="Итоговый прогноз" value={mln(forecast.forecast_total_kwh)} unit="млн кВт·ч" note={`${signedPercent(forecast.expected_change_pct)} к последнему месяцу`} />
+      <KpiCard icon={Thermometer} label="Влияние погоды" value={signedEnergy(forecast.weather_effect_kwh)} unit="млн кВт·ч" note={weatherReady ? `${totalWeatherAnomalies} аномальных дней на графике` : 'резервный расчёт без погоды'} tone="blue" />
+      <KpiCard icon={Factory} label="События мощности" value={signedEnergy(forecast.event_effect_kwh)} unit="млн кВт·ч" note={`${adjustments.length} активных поправок`} tone="yellow" />
+      <KpiCard icon={Gauge} label="Точность бэктеста" value={backtestAccuracy == null ? '—' : Math.round(backtestAccuracy * 100)} unit={backtestAccuracy == null ? '' : '%'} note={forecast.backtest?.periods ? `${forecast.backtest.periods} исторических периода` : 'нужно минимум 2 месяца'} tone="green" />
     </div>
 
     <div className="dashboard-grid">
       <Card
-        className="span-8 energy-chart-card"
-        title={`Дневной прогноз · ${forecastPeriodLabel}`}
-        subtitle="Контролируемый вход с коридором неопределённости"
-        action={<div className="peak-chip"><span/> База {mln(mainScenario?.value)} млн кВт·ч</div>}
+        className="span-12 energy-chart-card combined-forecast-card"
+        title={`${sourcePeriodLabel}: факт · ${forecastPeriodLabel}: прогноз`}
+        subtitle="Единая временная шкала нагрузки и погоды за два месяца"
+        action={<div className="peak-chip forecast-comparison-chip">
+          <span/> {sourcePeriodLabel}: {mln(forecast.source_total_kwh)} → {forecastPeriodLabel}: {mln(mainScenario?.value)} млн кВт·ч · {signedPercent(forecast.expected_change_pct)}
+        </div>}
       >
+        <div className="forecast-chart-legend">
+          <span className="actual"><i/> Нагрузка · факт</span>
+          <span className="forecast"><i/> Нагрузка · прогноз</span>
+          <span className="weather-actual"><i/> Температура · факт</span>
+          <span className="weather-forecast"><i/> Температура · прогноз API</span>
+          <span className="anomaly"><i/> Погодная аномалия</span>
+        </div>
         <div className="energy-chart forecast-chart">
           <Suspense fallback={<div className="result-chart-fallback">Строим прогноз…</div>}>
-            <EnergyBusinessCharts kind="forecast" data={forecast.series || []}/>
+            <EnergyBusinessCharts kind="forecast" data={combinedSeries}/>
           </Suspense>
         </div>
         <div className="load-signal-summary wide">
           <div><small>ОЖИДАЕМЫЙ ДИАПАЗОН</small><b>{mln(forecast.forecast_low_kwh)}–{mln(forecast.forecast_high_kwh)} млн кВт·ч</b></div>
-          <p>Коридор учитывает волатильность дневного профиля и длину доступной месячной истории. Чем больше загруженных периодов, тем уже станет диапазон.</p>
+          <p>Мартовский профиль приведён к общей границе техбаланса. Сплошная синяя температура — известная погода ERA5, фиолетовый пунктир — прогноз API; красные зоны отмечают аномалии.</p>
         </div>
       </Card>
 
-      <Card className="span-4" title="Сценарии месяца" subtitle="Общий расход по техническому балансу">
-        <div className="scenario-grid forecast-scenarios">
-          {(forecast.scenarios || []).map((item, index) => <article className="scenario" key={item.name}>
-            <b>{mln(item.value)}</b>
-            <span>{item.name}<br/>{signedPercent(item.delta_pct)}</span>
-            <i style={{ background: chartPalette[index % chartPalette.length] }}/>
-          </article>)}
-        </div>
-        <div className="forecast-driver-list">
-          {(forecast.drivers || []).map(item => <div key={item.label}>
-            <span>{item.label}</span>
-            <b>{typeof item.value === 'number' ? (Math.abs(item.value) < 1 ? signedPercent(item.value) : fmt(item.value)) : item.value}</b>
-          </div>)}
+      <Card className="span-12 combined-scenario-card" title="Сценарии месяца" subtitle="Общий расход по техническому балансу">
+        <div className="forecast-scenario-layout">
+          <div className="scenario-grid forecast-scenarios">
+            {(forecast.scenarios || []).map((item, index) => <article className="scenario" key={item.name}>
+              <b>{mln(item.value)}</b>
+              <span>{item.name}<br/>{signedPercent(item.delta_pct)}</span>
+              <i style={{ background: chartPalette[index % chartPalette.length] }}/>
+            </article>)}
+          </div>
+          <div className="forecast-driver-list">
+            {(forecast.drivers || []).map(item => <div key={item.label}>
+              <span>{item.label}</span>
+              <b>{typeof item.value === 'number' ? (Math.abs(item.value) < 1 ? signedPercent(item.value) : fmt(item.value)) : item.value}</b>
+            </div>)}
+          </div>
         </div>
       </Card>
 
-      <Card className="span-12" title="Как считается прогноз" subtitle="Прозрачная модель без скрытых коэффициентов">
+      <Card
+        className="span-12 forecast-control-card"
+        title="Операционные поправки"
+        subtitle="Датированные изменения установленной мощности пересчитывают прогноз сразу после добавления"
+        action={loading && result ? <span className="forecast-recalculating">Пересчёт…</span> : null}
+      >
+        <form className="forecast-adjustment-form" onSubmit={addAdjustment}>
+          <label>
+            <span>Событие</span>
+            <input value={draft.name} onChange={event => setDraft({...draft, name: event.target.value})} placeholder="Например, ремонт ГПЭС-3"/>
+          </label>
+          <label>
+            <span>Тип влияния</span>
+            <select value={draft.kind} onChange={event => setDraft({...draft, kind: event.target.value})}>
+              <option value="outage">Остановка</option>
+              <option value="derating">Снижение нагрузки</option>
+              <option value="addition">Ввод мощности</option>
+            </select>
+          </label>
+          <label>
+            <span>Мощность, кВт</span>
+            <input type="number" min="1" step="1" value={draft.capacity_kw} onChange={event => setDraft({...draft, capacity_kw: event.target.value})} placeholder="1500"/>
+          </label>
+          <label>
+            <span>Загрузка, %</span>
+            <input type="number" min="1" max="100" value={draft.utilization_pct} onChange={event => setDraft({...draft, utilization_pct: event.target.value})}/>
+          </label>
+          <label>
+            <span>Начало</span>
+            <input type="date" value={draft.start_date} onChange={event => setDraft({...draft, start_date: event.target.value})}/>
+          </label>
+          <label>
+            <span>Окончание</span>
+            <input type="date" value={draft.end_date} onChange={event => setDraft({...draft, end_date: event.target.value})}/>
+          </label>
+          <button className="forecast-add" type="submit" title="Добавить поправку"><Plus/> Добавить</button>
+        </form>
+        {adjustments.length > 0
+          ? <div className="forecast-adjustment-list">
+              {adjustments.map(item => <div key={item.id}>
+                <i className={item.kind}/>
+                <span><b>{item.name}</b><small>{item.start_date} — {item.end_date}</small></span>
+                <strong>{item.kind === 'addition' ? '+' : '−'}{fmt(item.capacity_kw)} кВт · {Math.round(item.utilization * 100)}%</strong>
+                <button type="button" title="Удалить поправку" onClick={() => setAdjustments(current => current.filter(candidate => candidate.id !== item.id))}><Trash2/></button>
+              </div>)}
+            </div>
+          : <div className="forecast-adjustment-empty"><Factory/><span>Базовый сценарий без остановок и ввода новых мощностей</span></div>
+        }
+      </Card>
+
+      <Card className="span-12" title="Погодные данные" subtitle="Источник и качество погодного слоя">
+        <div className={`forecast-weather-status ${weatherReady ? 'ready' : 'offline'}`}>
+          <CloudSun/>
+          <div><small>ИСТОЧНИК</small><b>{forecast.weather?.provider || 'Open-Meteo'}</b></div>
+          <div><small>ЛОКАЦИЯ</small><b>{forecast.weather?.location?.name || 'Жанажол'}</b></div>
+          <div><small>МОДЕЛЬ НАГРУЗКИ</small><b>HDD / CDD · {forecast.weather?.model?.observations || 0} наблюдений</b></div>
+          <div><small>СТАТУС</small><b>{weatherReady ? 'Данные получены' : forecast.weather?.message || 'Без погодной поправки'}</b></div>
+        </div>
+      </Card>
+
+      <Card className="span-12" title="Как считается прогноз" subtitle="Объяснимая формула и контроль ошибки">
         <div className="forecast-method">
           {(forecast.method || []).map((item, index) => <div key={item}>
             <b>{index + 1}</b>

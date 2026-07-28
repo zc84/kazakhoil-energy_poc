@@ -23,6 +23,7 @@ from .models import (
 from .schemas import (
     DashboardRead,
     EnergyBusinessDashboardRead,
+    EnergyForecastRequest,
     ImportBatchRead,
     ImportPreviewRead,
     ImportResultRead,
@@ -305,6 +306,22 @@ def energy_business_dashboard(
         date_from=date_from,
         date_to=date_to,
     )
+
+
+@app.post("/api/v1/forecasts/energy", tags=["forecasts"])
+def energy_forecast(
+    request: EnergyForecastRequest,
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    payload = build_energy_business_dashboard(
+        db,
+        forecast_adjustments=[
+            adjustment.model_dump(mode="json")
+            for adjustment in request.adjustments
+        ],
+        forecast_with_weather=True,
+    )
+    return payload["forecast"]
 
 
 @app.get("/api/v1/dashboards/monthly", response_model=DashboardRead, tags=["dashboards"])

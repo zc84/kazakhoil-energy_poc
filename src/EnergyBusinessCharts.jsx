@@ -1,7 +1,7 @@
 import React from 'react'
 import {
-  Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Line,
-  LineChart, Pie, PieChart, ReferenceLine, ReferenceArea, ResponsiveContainer, Tooltip,
+  Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, ComposedChart, Line,
+  LineChart, Pie, PieChart, ReferenceDot, ReferenceLine, ReferenceArea, ResponsiveContainer, Tooltip,
   XAxis, YAxis,
 } from 'recharts'
 
@@ -29,11 +29,52 @@ const shortDate = value => new Intl.DateTimeFormat('ru-RU', {
 
 function EnergyTooltip({ active, payload, label, date = false }) {
   if (!active || !payload?.length) return null
+  const point = payload[0]?.payload || {}
   return <div className="energy-tooltip">
     <b>{date ? shortDate(label) : label}</b>
-    {payload.map(item => <span key={item.dataKey} style={{ '--series-color': item.color }}>
+    {payload.filter(item => item.dataKey !== 'weatherMarkerY').map(item => <span key={item.dataKey} style={{ '--series-color': item.color }}>
       <i/> {item.name}: <strong>{fmt(item.value)} кВт·ч</strong>
     </span>)}
+    {date && point.temperature != null && <div className="energy-tooltip-weather">
+      <b>{weatherSymbol(point.weather_code)} {Number(point.temperature).toFixed(1)} °C</b>
+      <span>{Number(point.precipitation || 0).toFixed(1)} мм · ветер {Number(point.wind_speed || 0).toFixed(0)} км/ч</span>
+      {point.weather_anomaly && <strong>{point.weather_anomaly_label}</strong>}
+      <small>Погода {signedCompact(point.weather_delta_kwh)} кВт·ч · события {signedCompact(point.event_delta_kwh)} кВт·ч</small>
+    </div>}
+  </div>
+}
+
+const weatherSymbol = code => {
+  const value = Number(code)
+  if (value >= 95) return '⚡'
+  if (value >= 71) return '❄'
+  if (value >= 51) return '☂'
+  if (value >= 2) return '☁'
+  return '☀'
+}
+
+const signedCompact = value => `${Number(value || 0) >= 0 ? '+' : '−'}${compact(Math.abs(Number(value || 0)))}`
+
+function ForecastTooltip({ active, payload, label }) {
+  if (!active || !payload?.length) return null
+  const point = payload[0]?.payload || {}
+  return <div className="energy-tooltip forecast-tooltip">
+    <b>{shortDate(label)} · {point.phase === 'actual' ? 'факт' : 'прогноз'}</b>
+    {point.actual != null && <span style={{ '--series-color': '#345f73' }}>
+      <i/> Факт по техбалансу: <strong>{fmt(point.actual)} кВт·ч</strong>
+    </span>}
+    {point.actual_metered != null && <small>Контрольные вводы: {fmt(point.actual_metered)} кВт·ч</small>}
+    {point.value != null && <span style={{ '--series-color': palette.line }}>
+      <i/> Прогноз нагрузки: <strong>{fmt(point.value)} кВт·ч</strong>
+    </span>}
+    {point.lower != null && <small>Коридор: {fmt(point.lower)}–{fmt(point.upper)} кВт·ч</small>}
+    {point.temperature != null && <div className="energy-tooltip-weather">
+      <b>{weatherSymbol(point.weather_code)} {Number(point.temperature).toFixed(1)} °C</b>
+      <span>{Number(point.precipitation || 0).toFixed(1)} мм · ветер {Number(point.wind_speed || 0).toFixed(0)} км/ч</span>
+      <small>{point.phase === 'actual' ? 'Историческая погода' : 'Прогноз погоды'} · {point.weather_source}</small>
+      {point.weather_anomaly && <strong>{point.weather_anomaly_label}</strong>}
+      {point.phase === 'forecast' && <small>Погода {signedCompact(point.weather_delta_kwh)} кВт·ч · события {signedCompact(point.event_delta_kwh)} кВт·ч</small>}
+    </div>}
   </div>
 }
 
@@ -148,12 +189,24 @@ function ExternalGroups({ data }) {
 }
 
 function ForecastLoad({ data }) {
-  const maxValue = data.reduce((max, item) => Math.max(max, Number(item.upper || item.value || 0)), 0)
-  const yMax = maxValue > 0 ? maxValue * 1.18 : 'auto'
+  const maxValue = data.reduce(
+    (max, item) => Math.max(max, Number(item.actual || 0), Number(item.upper || item.value || 0)),
+    0,
+  )
+  const chartData = data.map(item => ({ ...item, weatherMarkerY: maxValue * 1.12 }))
+  const yMax = maxValue > 0 ? maxValue * 1.28 : 'auto'
+  const forecastStart = chartData.find(item => item.phase === 'forecast')?.date
+  const weatherMarkers = chartData.filter(
+    (item, index) => item.weather_code != null && (item.weather_anomaly || index % 3 === 0),
+  )
 
   return <ResponsiveContainer width="100%" height="100%">
-    <AreaChart data={data} margin={{ top: 10, right: 24, bottom: 0, left: 18 }}>
+    <ComposedChart data={chartData} margin={{ top: 12, right: 20, bottom: 0, left: 12 }}>
       <defs>
+        <linearGradient id="actualEnergyFill" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#345f73" stopOpacity=".2"/>
+          <stop offset="100%" stopColor="#345f73" stopOpacity=".02"/>
+        </linearGradient>
         <linearGradient id="forecastEnergyFill" x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor={palette.line} stopOpacity=".25"/>
           <stop offset="100%" stopColor={palette.line} stopOpacity=".03"/>
@@ -167,9 +220,67 @@ function ForecastLoad({ data }) {
         tickLine={false}
         minTickGap={26}
       />
-      <YAxis domain={[0, yMax]} tickFormatter={compact} axisLine={false} tickLine={false} width={50}/>
-      <Tooltip content={<EnergyTooltip date/>}/>
+      <YAxis yAxisId="energy" domain={[0, yMax]} tickFormatter={compact} axisLine={false} tickLine={false} width={50}/>
+      <YAxis
+        yAxisId="temperature"
+        orientation="right"
+        domain={['dataMin - 4', 'dataMax + 4']}
+        tickFormatter={value => `${Math.round(value)}°`}
+        axisLine={false}
+        tickLine={false}
+        width={34}
+      />
+      <Tooltip content={<ForecastTooltip/>}/>
+      {forecastStart && <ReferenceLine
+        yAxisId="energy"
+        x={forecastStart}
+        stroke="#75938b"
+        strokeDasharray="3 4"
+        label={{ value: 'ПРОГНОЗ', position: 'insideTopRight', fill: '#75938b', fontSize: 8 }}
+      />}
+      {chartData.filter(item => item.weather_anomaly).map(item => (
+        <ReferenceLine
+          key={`weather-${item.date}`}
+          yAxisId="energy"
+          x={item.date}
+          stroke="#e45b62"
+          strokeWidth={12}
+          strokeOpacity=".1"
+          ifOverflow="extendDomain"
+        />
+      ))}
+      {weatherMarkers.map(item => (
+        <ReferenceDot
+          key={`weather-icon-${item.date}`}
+          yAxisId="energy"
+          x={item.date}
+          y={item.weatherMarkerY}
+          r={item.weather_anomaly ? 9 : 7}
+          fill={item.weather_anomaly ? '#fff0f0' : (item.phase === 'actual' ? '#edf5f8' : '#eff8f4')}
+          stroke={item.weather_anomaly ? '#e45b62' : (item.phase === 'actual' ? '#6b93a5' : '#6ca78f')}
+          strokeWidth={item.weather_anomaly ? 2 : 1}
+          ifOverflow="visible"
+          label={{
+            value: weatherSymbol(item.weather_code),
+            position: 'center',
+            fontSize: 10,
+          }}
+        />
+      ))}
       <Area
+        yAxisId="energy"
+        type="monotone"
+        dataKey="actual"
+        name="Факт прошлого месяца"
+        stroke="#345f73"
+        strokeWidth={2.2}
+        fill="url(#actualEnergyFill)"
+        dot={false}
+        activeDot={{ r: 4, fill: '#345f73', stroke: '#fff', strokeWidth: 2 }}
+        connectNulls={false}
+      />
+      <Area
+        yAxisId="energy"
         type="monotone"
         dataKey="value"
         name="Базовый прогноз"
@@ -180,6 +291,7 @@ function ForecastLoad({ data }) {
         activeDot={{ r: 4, fill: palette.line, stroke: '#fff', strokeWidth: 2 }}
       />
       <Line
+        yAxisId="energy"
         type="monotone"
         dataKey="upper"
         name="Верхняя граница"
@@ -189,6 +301,7 @@ function ForecastLoad({ data }) {
         dot={false}
       />
       <Line
+        yAxisId="energy"
         type="monotone"
         dataKey="lower"
         name="Нижняя граница"
@@ -197,7 +310,28 @@ function ForecastLoad({ data }) {
         strokeDasharray="5 5"
         dot={false}
       />
-    </AreaChart>
+      <Line
+        yAxisId="temperature"
+        type="monotone"
+        dataKey="temperature_actual"
+        name="Температура · факт"
+        stroke="#568eaf"
+        strokeWidth={1.8}
+        dot={false}
+        connectNulls={false}
+      />
+      <Line
+        yAxisId="temperature"
+        type="monotone"
+        dataKey="temperature_forecast"
+        name="Температура · прогноз"
+        stroke="#8e70c1"
+        strokeWidth={1.8}
+        strokeDasharray="4 4"
+        dot={false}
+        connectNulls={false}
+      />
+    </ComposedChart>
   </ResponsiveContainer>
 }
 

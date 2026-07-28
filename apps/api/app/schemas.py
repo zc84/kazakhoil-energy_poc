@@ -1,6 +1,6 @@
-from datetime import datetime
+from datetime import date, datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 from .models import DatasetKind, ImportStatus, ValidationSeverity
 
@@ -82,6 +82,26 @@ class EnergyBusinessDashboardRead(BaseModel):
     data_quality: dict[str, object]
     insight: str
     warnings: list[str]
+
+
+class ForecastAdjustment(BaseModel):
+    id: str
+    name: str = Field(min_length=1, max_length=120)
+    kind: str = Field(pattern="^(outage|derating|addition)$")
+    start_date: date
+    end_date: date
+    capacity_kw: float = Field(gt=0, le=1_000_000)
+    utilization: float = Field(gt=0, le=1)
+
+    @model_validator(mode="after")
+    def validate_period(self):
+        if self.end_date < self.start_date:
+            raise ValueError("end_date must not precede start_date")
+        return self
+
+
+class EnergyForecastRequest(BaseModel):
+    adjustments: list[ForecastAdjustment] = Field(default_factory=list, max_length=50)
 
 
 class DashboardRead(BaseModel):
