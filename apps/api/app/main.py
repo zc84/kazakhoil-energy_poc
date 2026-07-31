@@ -51,9 +51,11 @@ from .services.ai import (
 )
 from .services.dashboard import (
     build_available_filters,
+    build_daily_consumption_dashboard,
     build_energy_business_dashboard,
     build_import_backed_dashboard,
     build_import_result,
+    build_technical_balance_dashboard,
     is_period_in_range,
     parse_period_start_from_filename,
 )
@@ -365,6 +367,24 @@ def monthly_dashboard(
         "date_to": date_to.isoformat() if date_to else None,
     }
     return payload
+
+
+@app.get(
+    "/api/v1/dashboards/technical-balance",
+    response_model=DashboardRead,
+    tags=["dashboards"],
+)
+def technical_balance_dashboard(db: Session = Depends(get_db)) -> dict[str, object]:
+    return build_technical_balance_dashboard(db)
+
+
+@app.get(
+    "/api/v1/dashboards/daily-consumption",
+    response_model=DashboardRead,
+    tags=["dashboards"],
+)
+def daily_consumption_dashboard(db: Session = Depends(get_db)) -> dict[str, object]:
+    return build_daily_consumption_dashboard(db)
 
 
 @app.get("/api/v1/dashboards/anomalies", response_model=DashboardRead, tags=["dashboards"])

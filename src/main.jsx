@@ -19,6 +19,8 @@ const nav = [
   { section: 'ОБЗОР', items: [{ id: 'overview', label: 'Сводка', icon: LayoutDashboard }] },
   { section: 'АНАЛИТИКА', items: [
     { id: 'consumption', label: 'Энергобаланс', icon: Zap },
+    { id: 'technicalBalance', label: 'Тех. баланс', icon: FileSpreadsheet },
+    { id: 'dailyConsumption', label: 'Ежедневное потребление', icon: CalendarDays },
     { id: 'peaks', label: 'Пики и аномалии', icon: AlertTriangle },
     { id: 'consumers', label: 'Потребители', icon: Users },
     { id: 'forecast', label: 'Прогноз', icon: TrendingUp },
@@ -35,6 +37,8 @@ const nav = [
 const pageTitles = {
   overview: ['Сводка', 'Загрузки, проверки и расчёты'],
   consumption: ['Энергобаланс', 'Поступление и расход электроэнергии'],
+  technicalBalance: ['Тех. баланс', 'Объекты учёта, показания и расход'],
+  dailyConsumption: ['Ежедневное потребление', 'Счётчики и подстанции по дням'],
   peaks: ['Пики и аномалии', 'Суточные превышения и изменения нагрузки'],
   consumers: ['Потребители', 'Объекты нагрузки и погодные регионы'],
   forecast: ['Прогноз', 'Расчёт нагрузки по истории и погоде'],
@@ -159,8 +163,6 @@ const WEATHER_REGIONS = [
   { id: 'almaty-city', name: 'Алматы', apiName: 'Almaty', latitude: 43.24, longitude: 76.89, timezone: 'Asia/Almaty' },
   { id: 'shymkent', name: 'Шымкент', apiName: 'Shymkent', latitude: 42.32, longitude: 69.59, timezone: 'Asia/Almaty' },
 ]
-const CENTRAL_KAZAKHSTAN_REGION_ID = 'karaganda'
-const SMALL_CONSUMER_SHARE_LIMIT = 0.1
 const fmtDateTime = value => {
   if (!value) return '—'
   const normalizedValue = typeof value === 'string' && !/[zZ]|[+-]\d{2}:?\d{2}$/.test(value)
@@ -802,6 +804,129 @@ function DailyEnergyBalance({ result, onOpenQuality }) {
   </>
 }
 
+function SourceDashboard({ kind, hasImports, onOpenQuality }) {
+  const config = kind === 'technical'
+    ? {
+        endpoint: '/api/v1/dashboards/technical-balance',
+        emptyTitle: 'Технический баланс ещё не загружен',
+        loading: 'Собираем технический баланс…',
+        chartTitle: 'Крупнейшие объекты учёта',
+        chartSubtitle: 'Ранжирование пересчитанного расхода',
+      }
+    : {
+        endpoint: '/api/v1/dashboards/daily-consumption',
+        emptyTitle: 'Ежедневная сводка ещё не загружена',
+        loading: 'Собираем ежедневное потребление…',
+        chartTitle: 'Общий расход по счётчикам',
+        chartSubtitle: 'Суммарное потребление за последний месяц',
+      }
+  const [result, setResult] = useState(null)
+  const [loading, setLoading] = useState(hasImports)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    if (!hasImports) {
+      setResult(null)
+      setLoading(false)
+      return
+    }
+    let active = true
+    setLoading(true)
+    setError('')
+    ;(async () => {
+      try {
+        const response = await apiFetch(config.endpoint)
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        const data = await parseJsonResponse(response)
+        if (active) setResult(data)
+      } catch (err) {
+        if (active) setError(err.message || 'Ошибка загрузки')
+      } finally {
+        if (active) setLoading(false)
+      }
+    })()
+    return () => { active = false }
+  }, [hasImports, config.endpoint])
+
+  if (!hasImports) {
+    return <Card title={config.emptyTitle}>
+      <EmptyState title="Нужен исходный файл" text="Загрузите данные, чтобы построить этот дэшборд." actionLabel="Загрузить данные" onAction={onOpenQuality}/>
+    </Card>
+  }
+  if (loading) return <div className="result-loading"><span/><b>{config.loading}</b></div>
+  if (error || !result?.table?.length) {
+    return <Card title="Дэшборд недоступен">
+      <EmptyState title="Нет данных для отображения" text="Проверьте тип и состояние загруженного файла." actionLabel="Открыть загрузки" onAction={onOpenQuality}/>
+    </Card>
+  }
+
+  const kpis = result.kpis || {}
+  const periodLabel = fmtMonthYear(result.meta?.period)
+  const totalValue = Number(kpis.total_kwh || 0)
+  const peakLabel = kpis.peak_day?.date || '—'
+  const mlnValue = value => new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(Number(value || 0) / 1_000_000)
+  const isTechnical = kind === 'technical'
+
+  return <>
+    <section className="source-dashboard-hero">
+      <div>
+        <span>{isTechnical ? 'ТЕХНИЧЕСКИЙ БАЛАНС' : 'ЕЖЕДНЕВНОЕ ПОТРЕБЛЕНИЕ'} · {String(periodLabel || 'последний период').toUpperCase()}</span>
+        <h2>{result.insight}</h2>
+        <p>{result.meta?.filename}</p>
+      </div>
+      <strong>{mlnValue(totalValue)}<small>млн кВт·ч</small></strong>
+    </section>
+    <div className="kpi-grid four source-kpis">
+      {isTechnical ? <>
+        <KpiCard icon={Zap} label="Общий вход" value={mlnValue(kpis.total_kwh)} unit="млн кВт·ч" note={periodLabel}/>
+        <KpiCard icon={Factory} label="Казахойл" value={mlnValue(kpis.own_kwh)} unit="млн кВт·ч" note="собственное потребление" tone="green"/>
+        <KpiCard icon={Users} label="Внешние" value={mlnValue(kpis.external_kwh)} unit="млн кВт·ч" note="сторонние потребители" tone="yellow"/>
+        <KpiCard icon={Database} label="Строки учёта" value={fmt(kpis.objects)} unit="" note="с пересчитанным расходом" tone="blue"/>
+      </> : <>
+        <KpiCard icon={CalendarDays} label="Дней" value={fmt(kpis.days)} unit="" note={periodLabel}/>
+        <KpiCard icon={Gauge} label="Счётчиков" value={fmt(kpis.objects)} unit="" note="в рейтинге месяца" tone="blue"/>
+        <KpiCard icon={Zap} label="Нагрузка точек" value={mlnValue(kpis.total_kwh)} unit="млн кВт·ч" note="сумма доступных показаний" tone="green"/>
+        <KpiCard icon={TrendingUp} label="Пиковый день" value={peakLabel} unit="" note={`${fmt(kpis.peak_day?.value)} кВт·ч`} tone="yellow"/>
+      </>}
+    </div>
+    <div className="dashboard-grid source-dashboard-grid">
+      <Card className="span-7 energy-chart-card" title={config.chartTitle} subtitle={config.chartSubtitle}>
+        <div className="energy-chart source-ranking-chart">
+          <Suspense fallback={<div className="result-chart-fallback">Строим рейтинг…</div>}>
+            <EnergyBusinessCharts kind="outgoing" data={(result.series || []).slice(0, 15)}/>
+          </Suspense>
+        </div>
+      </Card>
+      <Card className="span-5 energy-chart-card" title="Распределение по подстанциям" subtitle="Структура доступной детализации">
+        <div className="energy-chart groups-chart">
+          <Suspense fallback={<div className="result-chart-fallback">Собираем подстанции…</div>}>
+            <EnergyBusinessCharts kind="external" data={result.breakdowns || []}/>
+          </Suspense>
+        </div>
+        <div className="energy-composition-summary external-groups-legend">
+          {(result.breakdowns || []).slice(0, 8).map((item, index) => <div key={item.name}>
+            <span style={{ background: chartPalette[index % chartPalette.length] }}/>
+            <small>{item.name}</small>
+            <b>{totalValue ? new Intl.NumberFormat('ru-RU', { style: 'percent', maximumFractionDigits: 1 }).format(Number(item.value || 0) / totalValue) : '—'}</b>
+          </div>)}
+        </div>
+      </Card>
+      <Card className="span-12" title={isTechnical ? 'Таблица объектов' : 'Таблица потребления'} subtitle="Номер прибора, подстанция и рассчитанный расход">
+        <div className="data-table source-dashboard-table">
+          <div className="tr th"><span>Наименование</span><span>№ ПУ</span><span>Подстанция</span><span>Расход</span><span>{isTechnical ? 'Коэффициент' : 'Дней'}</span></div>
+          {result.table.slice(0, 80).map(item => <div className="tr" key={item.id}>
+            <span className="file-name">{item.name}</span>
+            <span>{item.meter_number || '—'}</span>
+            <span>{item.substation || 'Требует уточнения'}</span>
+            <span>{fmt(item.value)} кВт·ч</span>
+            <span>{fmt(isTechnical ? item.coefficient : item.days)}</span>
+          </div>)}
+        </div>
+      </Card>
+    </div>
+  </>
+}
+
 function EnergyBusinessDashboard({ hasImports, onOpenQuality }) {
   const [result, setResult] = useState(null)
   const [loading, setLoading] = useState(hasImports)
@@ -880,7 +1005,7 @@ function EnergyBusinessDashboard({ hasImports, onOpenQuality }) {
 
   const {
     meta, kpis, monthly_series: monthly, daily_series: daily,
-    outgoing_35kv: outgoing, external_groups: externalGroups,
+    external_substations: externalSubstations = [],
     top_external_consumers: topExternal, reconciliation, data_quality: quality,
     insight, warnings,
   } = result
@@ -890,19 +1015,10 @@ function EnergyBusinessDashboard({ hasImports, onOpenQuality }) {
   const dateLabel = value => value
     ? new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long' }).format(new Date(`${value}T00:00:00`))
     : '—'
-  const wordForm = (value, one, few, many) => {
-    const number = Math.abs(Number(value || 0)) % 100
-    if (number >= 11 && number <= 19) return many
-    const last = number % 10
-    if (last === 1) return one
-    if (last >= 2 && last <= 4) return few
-    return many
-  }
   const periodLabel = formatPeriodRange(monthly)
   const latestPeriodLabel = fmtMonthYear(meta.latest_period) || meta.latest_label
-  const attentionCount = Number(kpis.negative_intervals || 0) + Number(kpis.incomplete_intervals || 0)
   const topExternalTotal = topExternal.reduce((sum, item) => sum + Number(item.value || 0), 0)
-  const externalGroupsTotal = externalGroups.reduce((sum, item) => sum + Number(item.value || 0), 0)
+  const externalSubstationsTotal = externalSubstations.reduce((sum, item) => sum + Number(item.value || 0), 0)
   const monthlyComposition = monthly.slice(-3)
   const dailySignals = buildDailySignals(daily)
   const anomalySummary = dailySignals.events.length
@@ -924,7 +1040,7 @@ function EnergyBusinessDashboard({ hasImports, onOpenQuality }) {
       </div>
     </section>
 
-    <div className="energy-kpis">
+    <div className="energy-kpis three">
       <article>
         <div><span className="energy-kpi-icon total"><Zap/></span><small>ОБЩЕЕ ПОТРЕБЛЕНИЕ · {latestPeriodLabel}</small></div>
         <strong>{mln(kpis.total_kwh)}</strong>
@@ -942,12 +1058,6 @@ function EnergyBusinessDashboard({ hasImports, onOpenQuality }) {
         <strong>{mln(kpis.external_kwh)}</strong>
         <span>млн кВт·ч · {percent(kpis.external_share)}</span>
         <p>Передано сторонним организациям</p>
-      </article>
-      <article className={attentionCount ? 'attention' : ''}>
-        <div><span className="energy-kpi-icon quality"><AlertTriangle/></span><small>ПОЛНОТА ДНЕВНЫХ ДАННЫХ</small></div>
-        <strong>{fmt(kpis.coverage_days)}</strong>
-        <span>дней с данными · {fmt(attentionCount)} {wordForm(attentionCount, 'замечание', 'замечания', 'замечаний')}</span>
-        <p>Отрицательный расход: {fmt(kpis.negative_intervals)} · неполные интервалы: {fmt(kpis.incomplete_intervals)}</p>
       </article>
     </div>
 
@@ -1028,38 +1138,26 @@ function EnergyBusinessDashboard({ hasImports, onOpenQuality }) {
       </div>}
 
       <Card
-        className="span-7 energy-chart-card energy-chart-row-secondary"
-        title={`Линии 35 кВ · ${latestPeriodLabel}`}
-        subtitle="Потребление по направлениям"
-      >
-        <div className="energy-chart outgoing-chart">
-          <Suspense fallback={<div className="result-chart-fallback">Считаем направления…</div>}>
-            <EnergyBusinessCharts kind="outgoing" data={outgoing}/>
-          </Suspense>
-        </div>
-      </Card>
-
-      <Card
         className="span-5 energy-chart-card energy-chart-row-secondary"
         title={`Внешнее потребление · ${latestPeriodLabel}`}
-        subtitle="Распределение по площадкам"
+        subtitle="Распределение по подстанциям Казахойла"
       >
         <div className="energy-chart groups-chart">
-          <Suspense fallback={<div className="result-chart-fallback">Группируем площадки…</div>}>
-            <EnergyBusinessCharts kind="external" data={externalGroups}/>
+          <Suspense fallback={<div className="result-chart-fallback">Группируем подстанции…</div>}>
+            <EnergyBusinessCharts kind="external" data={externalSubstations}/>
           </Suspense>
         </div>
         <div className="energy-composition-summary external-groups-legend">
-          {externalGroups.map((item, index) => <div key={item.name}>
+          {externalSubstations.map((item, index) => <div key={item.name}>
             <span style={{ background: chartPalette[index % chartPalette.length] }}/>
             <small>{item.name}</small>
-            <b>{externalGroupsTotal ? percent(Number(item.value || 0) / externalGroupsTotal) : '—'}</b>
+            <b>{externalSubstationsTotal ? percent(Number(item.value || 0) / externalSubstationsTotal) : '—'}</b>
           </div>)}
         </div>
       </Card>
 
       <Card
-        className="span-7"
+        className="span-7 energy-chart-row-secondary"
         title="Крупнейшие потребители"
         subtitle="Рейтинг по объёму внешнего потребления"
       >
@@ -1230,6 +1328,8 @@ function PeaksAndAnomaliesPage({ hasImports }) {
     : 'все площадки'
   const riseCount = dailySignals.events.filter(item => item.delta > 0).length
   const fallCount = dailySignals.events.filter(item => item.delta < 0).length
+  const qualityKpis = result.kpis || {}
+  const attentionCount = Number(qualityKpis.negative_intervals || 0) + Number(qualityKpis.incomplete_intervals || 0)
   const exportPeaks = () => {
     downloadCsv(
       `peaks-anomalies-${selectedPeriod || 'all'}-${selectedStation || 'all-stations'}.csv`,
@@ -1283,6 +1383,11 @@ function PeaksAndAnomaliesPage({ hasImports }) {
         <div className="peak-signal-value"><b>{fmt(dailySignals.controlLimit)}</b><strong>кВт·ч</strong></div>
         <p>дни выше этого уровня считаются пиковыми</p>
       </article>
+      <article className={`peak-signal-secondary data-completeness ${attentionCount ? 'attention' : ''}`}>
+        <small>ПОЛНОТА ДНЕВНЫХ ДАННЫХ</small>
+        <div className="peak-signal-value"><b>{fmt(qualityKpis.coverage_days)}</b><strong>дней</strong></div>
+        <p>{fmt(attentionCount)} замечаний · отрицательные: {fmt(qualityKpis.negative_intervals)} · неполные: {fmt(qualityKpis.incomplete_intervals)}</p>
+      </article>
     </section>
     <Card
       className="span-12 energy-chart-card"
@@ -1320,19 +1425,18 @@ function ConsumersPage({ hasImports, consumersState, mappings, setMappings }) {
   const progress = consumers.length ? mappedCount / consumers.length : 0
   const percent = value => new Intl.NumberFormat('ru-RU', { style: 'percent', maximumFractionDigits: 1 }).format(Number(value || 0))
   useEffect(() => {
-    if (!consumers.length || totalValue <= 0) return
+    if (!consumers.length) return
     setMappings(current => {
       let changed = false
       const next = { ...current }
       consumers.forEach(item => {
         if (next[item.id]) return
-        if (Number(item.value || 0) / totalValue >= SMALL_CONSUMER_SHARE_LIMIT) return
-        next[item.id] = CENTRAL_KAZAKHSTAN_REGION_ID
+        next[item.id] = 'aktobe'
         changed = true
       })
       return changed ? next : current
     })
-  }, [consumers, totalValue, setMappings])
+  }, [consumers, setMappings])
   const setRegion = (consumerId, regionId) => {
     setMappings(current => {
       const next = { ...current }
@@ -1350,7 +1454,7 @@ function ConsumersPage({ hasImports, consumersState, mappings, setMappings }) {
   const clearMappings = () => {
     setMappings(current => {
       const next = { ...current }
-      consumers.forEach(item => delete next[item.id])
+      consumers.forEach(item => { next[item.id] = 'aktobe' })
       return next
     })
   }
@@ -1382,7 +1486,7 @@ function ConsumersPage({ hasImports, consumersState, mappings, setMappings }) {
         {loading && <span className="filter-loading">Обновляем…</span>}
         <button className="export" type="button" onClick={reload}><Database/> Обновить</button>
         <button className="export" type="button" onClick={fillAktobe} disabled={!consumers.length}><MapPin/> Остальным — Актобе</button>
-        <button className="export" type="button" onClick={clearMappings} disabled={!mappedCount}><Trash2/> Сбросить регионы</button>
+        <button className="export" type="button" onClick={clearMappings} disabled={!mappedCount}><RotateCcw/> Сбросить на Актобе</button>
       </div>
     </div>
     <div className="kpi-grid three">
@@ -1390,15 +1494,16 @@ function ConsumersPage({ hasImports, consumersState, mappings, setMappings }) {
       <KpiCard icon={MapPin} label="Регионы назначены" value={Math.round(progress * 100)} unit="%" note={progress === 1 ? 'прогноз готов к расчёту' : 'назначьте регион каждому'} tone={progress === 1 ? 'green' : 'yellow'} />
       <KpiCard icon={Zap} label="Нагрузка точек учёта" value={fmt(totalValue)} unit="кВт·ч" note="сумма доступных показаний" tone="blue" />
     </div>
-    <Card title="Погодные регионы потребителей" subtitle="Регион нужен, чтобы учесть местную погоду в прогнозе">
+    <Card title="Погодные регионы потребителей" subtitle="Для новых потребителей по умолчанию используется Актюбинская область">
       <div className="data-table consumers-table">
-        <div className="tr th"><span>Потребитель</span><span>Группа</span><span>Потребление</span><span>Доля</span><span>Погодный регион</span><span>Состояние</span></div>
+        <div className="tr th"><span>Потребитель</span><span>Компания</span><span>Подстанция</span><span>Потребление</span><span>Доля</span><span>Погодный регион</span><span>Состояние</span></div>
         {consumers.length ? consumers.map(item => {
           const regionId = mappings[item.id] || ''
           const region = WEATHER_REGIONS.find(candidate => candidate.id === regionId)
           return <div className="tr" key={item.id}>
             <span className="file-name">{item.name}</span>
-            <span>{item.group || 'Прочие'}</span>
+            <span>{item.company || 'Требует уточнения'}</span>
+            <span>{item.substation || item.group || 'Требует уточнения'}</span>
             <span>{fmt(item.value)} кВт·ч</span>
             <span>{totalValue ? percent(Number(item.value || 0) / totalValue) : '—'}</span>
             <span>
@@ -1409,7 +1514,7 @@ function ConsumersPage({ hasImports, consumersState, mappings, setMappings }) {
             </span>
             <span><Status value={region ? 'В норме' : 'В работе'}/></span>
           </div>
-        }) : <div className="tr"><span>—</span><span>В отчёте не найдены потребители или объекты нагрузки</span><span>—</span><span>—</span><span>—</span><span><Status value="В работе"/></span></div>}
+        }) : <div className="tr"><span>—</span><span>В отчёте не найдены потребители или объекты нагрузки</span><span>—</span><span>—</span><span>—</span><span>—</span><span><Status value="В работе"/></span></div>}
       </div>
     </Card>
   </>
@@ -1607,6 +1712,8 @@ function ForecastPage({ hasImports, consumersState, mappings, forecastReady, onO
     forecast_high_kwh: Number(rawForecast.forecast_high_kwh || 0) * consumerScale,
     weather_effect_kwh: Number(rawForecast.weather_effect_kwh || 0) * consumerScale,
     event_effect_kwh: Number(rawForecast.event_effect_kwh || 0) * consumerScale,
+    segments: (rawForecast.segments || []).map(item => ({ ...item, value: Number(item.value || 0) * consumerScale })),
+    substations: (rawForecast.substations || []).map(item => ({ ...item, forecast_kwh: Number(item.forecast_kwh || 0) * consumerScale })),
     scenarios: (rawForecast.scenarios || []).map(item => ({ ...item, value: Number(item.value || 0) * consumerScale })),
     series: (rawForecast.series || []).map(scalePoint),
     combined_series: (rawForecast.combined_series || rawForecast.series || []).map(scalePoint),
@@ -1781,6 +1888,26 @@ function ForecastPage({ hasImports, consumersState, mappings, forecastReady, onO
         </div>
       </Card>
     </div>
+
+    <section className="forecast-breakdown-grid" aria-label="Структура прогноза">
+      <Card title="Казахойл и внешние потребители" subtitle="Разделение базового прогноза по границе техбаланса">
+        <div className="forecast-segment-list">
+          {(forecast.segments || []).map((item, index) => <div key={item.id}>
+            <span style={{ '--segment-color': chartPalette[index % chartPalette.length] }}><i/></span>
+            <div><b>{item.name}</b><small>{percent(item.share)} прогноза</small></div>
+            <strong>{mln(item.value)} <small>млн кВт·ч</small></strong>
+          </div>)}
+        </div>
+      </Card>
+      <Card title="Прогноз по подстанциям" subtitle="Внешнее потребление, распределённое по последнему техбалансу">
+        <div className="forecast-substation-list">
+          {(forecast.substations || []).map(item => <div key={item.id}>
+            <span><b>{item.name}</b><small>{percent(item.share)} внешнего потребления</small></span>
+            <strong>{mln(item.forecast_kwh)} <small>млн кВт·ч</small></strong>
+          </div>)}
+        </div>
+      </Card>
+    </section>
 
     {fullscreenChart && <div className="chart-fullscreen" role="dialog" aria-modal="true" aria-label="Прогноз нагрузки" onClick={() => setFullscreenChart(false)}>
       <section onClick={event => event.stopPropagation()}>
@@ -2740,6 +2867,8 @@ function AppShell({ dark, setDark }) {
       importsState={importsState}
     />,
     consumption: <EnergyBusinessDashboard hasImports={hasImports} onOpenQuality={()=>setPage('quality')}/>,
+    technicalBalance: <SourceDashboard kind="technical" hasImports={hasEnergyBalanceData} onOpenQuality={()=>setPage('quality')}/>,
+    dailyConsumption: <SourceDashboard kind="daily" hasImports={hasDailyData} onOpenQuality={()=>setPage('quality')}/>,
     peaks: <PeaksAndAnomaliesPage hasImports={hasDailyData}/>,
     consumers: <ConsumersPage hasImports={hasConsumerData} consumersState={consumersState} mappings={consumerMappings} setMappings={setConsumerMappings}/>,
     forecast: <ForecastPage hasImports={hasConsumerData} consumersState={consumersState} mappings={consumerMappings} forecastReady={forecastReady} onOpenConsumers={()=>setPage('consumers')}/>,

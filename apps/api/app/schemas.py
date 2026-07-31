@@ -76,6 +76,7 @@ class EnergyBusinessDashboardRead(BaseModel):
     daily_series: list[dict[str, object]]
     outgoing_35kv: list[dict[str, object]]
     external_groups: list[dict[str, object]]
+    external_substations: list[dict[str, object]]
     external_consumers: list[dict[str, object]]
     top_external_consumers: list[dict[str, object]]
     reconciliation: list[dict[str, object]]

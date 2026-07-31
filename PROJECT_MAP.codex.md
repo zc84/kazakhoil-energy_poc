@@ -1,6 +1,6 @@
 # Project map for Codex
 
-Last updated: 2026-07-27
+Last updated: 2026-07-31
 
 Purpose: compact index of the repository so future work can target files directly instead of rescanning the whole project.
 
@@ -11,7 +11,7 @@ Purpose: compact index of the repository so future work can target files directl
 - Backend: FastAPI + SQLAlchemy import foundation
 - Storage: local raw-file storage under backend data root
 - Current runtime data source:
-  - `quality`, `overview`, and `Энергобаланс` read real import data from backend API
+  - `quality`, `overview`, `Энергобаланс`, `Тех. баланс`, and `Ежедневное потребление` read real import data from backend API
   - the energy dashboard aggregates three technical balances and three daily summaries
   - other dashboard sections intentionally show empty states until semantic layer is implemented
 
@@ -48,7 +48,10 @@ Purpose: compact index of the repository so future work can target files directl
 
 - `Overview` — import/API status summary backed by `GET /api/v1/imports`
 - `Quality` — real file upload, batch list, preview/issues
-- `EnergyBusinessDashboard` — monthly balance, daily profile, 35 kV directions, external consumers, and source reconciliation
+- `EnergyBusinessDashboard` — monthly balance, daily profile, external consumption by substation, consumers, and source reconciliation
+- `SourceDashboard` — shared screen for technical-balance and daily-consumption operational views
+- `ConsumersPage` — company/substation classification and weather-region overrides, defaulting to Aktobe
+- `ForecastPage` — total forecast, Kazakhoil/external split, and substation breakdown
 - `EnergyBusinessCharts.jsx` — lazy-loaded Recharts visualizations for the business dashboard
 - `PlaceholderPage` — empty state for sections whose semantic layer is not implemented yet
 
@@ -76,9 +79,12 @@ Purpose: compact index of the repository so future work can target files directl
 - Frontend upload uses `POST /api/v1/imports`
 - Preview uses `GET /api/v1/imports/{id}/preview`
 - Business visualization uses `GET /api/v1/dashboards/energy-business`
+- Technical balance uses `GET /api/v1/dashboards/technical-balance`
+- Daily consumption uses `GET /api/v1/dashboards/daily-consumption`
 - Issues use `GET /api/v1/imports/{id}/issues`
 - Successful upload automatically opens the consolidated energy dashboard
-- Non-implemented dashboards do not show fabricated metrics; they render empty states instead
+- External-consumption detail reconciles to the official workbook total and keeps ambiguous mappings in «Требует уточнения»
+- Non-implemented monthly reconciliation does not show fabricated metrics; it renders an empty state
 
 ## Structural risks
 
@@ -94,5 +100,6 @@ Purpose: compact index of the repository so future work can target files directl
 - import overview: `src/main.jsx` → `Overview`
 - empty sections: `src/main.jsx` → `PlaceholderPage`
 - API entry: `apps/api/app/main.py`
+- release status: `docs/RELEASE_PLAN_2026_08.md`
 - import models: `apps/api/app/models.py`
 - parsing/storage: `apps/api/app/services/`

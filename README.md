@@ -96,6 +96,8 @@ docker compose -f infra/compose.yaml up
 - `GET /api/v1/dashboards/monthly`
 - `GET /api/v1/dashboards/anomalies`
 - `GET /api/v1/dashboards/energy-business`
+- `GET /api/v1/dashboards/technical-balance`
+- `GET /api/v1/dashboards/daily-consumption`
 
 ### AI
 

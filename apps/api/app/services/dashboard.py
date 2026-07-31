@@ -41,6 +41,44 @@ MONTHS_PREPOSITIONAL = {
     12: "декабре",
 }
 
+COMPANY_ALIASES = {
+    "gasproces comp": "GasProces.Comp",
+    "gasprocscomp": "GasProces.Comp",
+    "gasproscomp": "GasProces.Comp",
+    "кар тел": "КАР-ТЕЛ",
+    "мобтелсервис": "МобТелСервис",
+    "моб тел сервис": "МобТелСервис",
+    "gsm казахстан": "GSM Казахстан",
+    "казахтелеком": "Казахтелеком",
+    "каспий нефть": "Каспий нефть",
+    "казтрансойл": "КазТрансОйл",
+}
+
+SUMMARY_EXTERNAL_METERS = {
+    "касп нефть 1": "51616744",
+    "касп нефть 2": "51555226",
+    "казтрансойл 1": "51555218",
+    "казтрансойл 2": "51555151",
+}
+
+SUBSTATION_BY_METER = {
+    "51097674": "ПС 35/6 кВ Север",
+    "51259257": "ПС 35/6 кВ Север",
+    "51097603": "ПС 35/6 кВ Южная",
+    "51097590": "ПС 35/6 кВ Южная",
+    "51100980": "ПС 35/6 кВ Южная",
+    "51097623": "ПС 35/6 кВ Южная",
+    "51259238": "ПС 35/6 кВ Кожасай",
+    "51259324": "ПС 35/6 кВ Кожасай",
+    "51431297": "ПС 35/6 кВ БКНС Кожасай",
+    "51431332": "ПС 35/6 кВ БКНС Кожасай",
+    "51431357": "ПС Южный Жанажол",
+    "51616744": "ПС 110/35/6 кВ Казахойл",
+    "51555226": "ПС 110/35/6 кВ Казахойл",
+    "51555218": "ПС 35/6 кВ Южная",
+    "51555151": "ПС 35/6 кВ Южная",
+}
+
 
 def _period_from_filename(filename: str) -> tuple[str, str, int, int] | None:
     normalized = filename.casefold().replace("ё", "е")
@@ -174,6 +212,87 @@ def _reported_consumption(cells: list[object]) -> float | None:
     return _number(cells[7]) if len(cells) > 7 else None
 
 
+def _normalize_meter_number(value: object) -> str | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return str(int(value)) if value.is_integer() else format(value, "g")
+    normalized = re.sub(r"\s+", "", str(value)).strip()
+    if not normalized or normalized.casefold() in {"№пу", "потребление"}:
+        return None
+    return normalized
+
+
+def _slug(value: str) -> str:
+    return re.sub(
+        r"[^a-zа-я0-9]+",
+        "-",
+        value.casefold().replace("ё", "е"),
+    ).strip("-")
+
+
+def _company_from_label(label: str) -> str:
+    normalized = " ".join(
+        re.sub(r"[«»\"'.,()№/_-]+", " ", label.casefold().replace("ё", "е")).split()
+    )
+    for alias, canonical in COMPANY_ALIASES.items():
+        if alias in normalized:
+            return canonical
+
+    legal_match = re.search(
+        r"\b(?:тоо|ип|кх)\s+(.+?)(?:\s+(?:пл|площадка|кожасай|алис?бекмола|ввод|вахт|в гор|яч|упн|цпнг|ппн|0 4кв|35 6)|$)",
+        normalized,
+    )
+    if legal_match:
+        company = legal_match.group(1).strip()
+        if company:
+            return " ".join(part.capitalize() for part in company.split())
+
+    for marker, canonical in (
+        ("халиб", "Halliburton"),
+        ("сан др", "Сан-Дриллинг"),
+        ("25 корпус", "25 корпус"),
+        ("атжаксы", "Атжаксы"),
+        ("актобе техникс", "Актобе Техникс"),
+        ("шлюмберже", "Schlumberger"),
+    ):
+        if marker in normalized:
+            return canonical
+    return "Требует уточнения"
+
+
+def _substation_from_group(group: str) -> str:
+    normalized = group.casefold().replace("ё", "е")
+    if "газзавод" in normalized:
+        return "ПС 35/6 кВ Газзавод"
+    if "кожасай" in normalized:
+        return "ПС 110/35/6 кВ Кожасай"
+    if "площадка №4" in normalized:
+        return "ПС 110/35/6 кВ Казахойл"
+    return "Требует уточнения"
+
+
+def _substation_from_label(label: str, meter_number: str | None = None) -> str | None:
+    if meter_number and meter_number in SUBSTATION_BY_METER:
+        return SUBSTATION_BY_METER[meter_number]
+    normalized = label.casefold().replace("ё", "е")
+    if "южный жанажол" in normalized:
+        return "ПС Южный Жанажол"
+    if "бкнс" in normalized and "кожасай" in normalized:
+        return "ПС 35/6 кВ БКНС Кожасай"
+    if "кожасай" in normalized:
+        return "ПС 35/6 кВ Кожасай"
+    if "газзавод" in normalized:
+        return "ПС 35/6 кВ Газзавод"
+    if "пс север" in normalized or 'п/с север' in normalized:
+        return "ПС 35/6 кВ Север"
+    if "пс 35/6" in normalized and ("южн" in normalized or "юг" in normalized):
+        return "ПС 35/6 кВ Южная"
+    return None
+
+
 def _rows_by_sheet(db: Session, batch_id: int) -> dict[str, list[tuple[StagingRow, list[object]]]]:
     grouped: dict[str, list[tuple[StagingRow, list[object]]]] = defaultdict(list)
     rows = db.scalars(
@@ -258,15 +377,11 @@ def _daily_load_group(label: str) -> str:
 
 
 def _daily_load_id(cells: list[object], label: str) -> str:
-    meter_number = cells[2] if len(cells) > 2 else None
-    if isinstance(meter_number, (int, float)) and not isinstance(meter_number, bool):
-        return f"daily-meter-{int(meter_number)}"
-    normalized = re.sub(
-        r"[^a-zа-я0-9]+",
-        "-",
-        label.casefold().replace("ё", "е"),
-    ).strip("-")
-    return f"daily-load-{normalized}"
+    meter_number = _normalize_meter_number(cells[2] if len(cells) > 2 else None)
+    if meter_number:
+        channel = "reactive" if "реактив" in label.casefold() else "active"
+        return f"daily-meter-{_slug(meter_number)}-{channel}"
+    return f"daily-load-{_slug(label)}"
 
 
 def _add_month(period: str) -> tuple[int, int, str]:
@@ -906,19 +1021,73 @@ def build_energy_business_dashboard(
 
         external_rows: list[dict[str, object]] = []
         external_groups: dict[str, float] = defaultdict(float)
+        external_substations: dict[str, float] = defaultdict(float)
         active_group = "Прочие"
+        in_summary_block = False
         external_sheet_rows = sheets.get("Сторонние организации", [])
-        for _, cells in external_sheet_rows:
+        for row, cells in external_sheet_rows:
             label = _label(cells)
             normalized = _normalized_label(cells)
-            if normalized.startswith("потребление сторонних организаций"):
-                active_group = _external_group(label)
+            if normalized == "наименование" and len(cells) > 2 and "потребление" in str(cells[2] or "").casefold():
+                in_summary_block = True
                 continue
+            if normalized.startswith("потребление сторонних организаций"):
+                if not in_summary_block:
+                    active_group = _external_group(label)
+                continue
+
+            if in_summary_block:
+                if not label or "итого" in normalized:
+                    continue
+                summary_value = _number(cells[3] if len(cells) > 3 else None)
+                if summary_value is None or summary_value <= 0:
+                    summary_value = _number(cells[2] if len(cells) > 2 else None)
+                if summary_value is None or summary_value <= 0:
+                    continue
+                meter_number = next(
+                    (
+                        value
+                        for marker, value in SUMMARY_EXTERNAL_METERS.items()
+                        if marker in _slug(label).replace("-", " ")
+                    ),
+                    None,
+                )
+                company = _company_from_label(label)
+                substation = _substation_from_label(label, meter_number) or "Требует уточнения"
+                item = {
+                    "id": f"external-{_slug(meter_number or label)}",
+                    "meter_number": meter_number,
+                    "name": label,
+                    "value": summary_value,
+                    "group": "Отдельные внешние потребители",
+                    "company": company,
+                    "substation": substation,
+                    "source_row": row.row_index,
+                }
+                external_rows.append(item)
+                external_groups[company] += summary_value
+                external_substations[substation] += summary_value
+                continue
+
             value = _consumption(cells)
             if not label or value is None or value <= 0 or "итого" in normalized or normalized == "наименование":
                 continue
-            external_rows.append({"name": label, "value": value, "group": active_group})
-            external_groups[active_group] += value
+            meter_number = _normalize_meter_number(cells[2] if len(cells) > 2 else None)
+            company = _company_from_label(label)
+            substation = _substation_from_label(label, meter_number) or _substation_from_group(active_group)
+            item = {
+                "id": f"external-{_slug(meter_number or label)}",
+                "meter_number": meter_number,
+                "name": label,
+                "value": value,
+                "group": active_group,
+                "company": company,
+                "substation": substation,
+                "source_row": row.row_index,
+            }
+            external_rows.append(item)
+            external_groups[company] += value
+            external_substations[substation] += value
 
         for _, cells in [*main_rows, *external_sheet_rows]:
             calculated = _consumption(cells)
@@ -962,6 +1131,10 @@ def build_energy_business_dashboard(
         technical_details[period] = {
             "external_rows": external_rows,
             "external_groups": [{"name": name, "value": value} for name, value in external_groups.items()],
+            "external_substations": [
+                {"name": name, "value": value}
+                for name, value in external_substations.items()
+            ],
             "outgoing_35kv": outgoing_35kv,
         }
 
@@ -994,8 +1167,13 @@ def build_energy_business_dashboard(
             controlled_total = 0.0
             source_totals: dict[str, dict[str, object]] = {}
             in_load_section = False
+            active_substation = "ПС 110/35/6 кВ Казахойл"
             for _, cells in rows:
                 label = _label(cells)
+                meter_number = _normalize_meter_number(cells[2] if len(cells) > 2 else None)
+                inferred_substation = _substation_from_label(label, meter_number)
+                if inferred_substation:
+                    active_substation = inferred_substation
                 if _is_daily_load_section_end(label):
                     in_load_section = False
                     continue
@@ -1034,6 +1212,9 @@ def build_energy_business_dashboard(
                             "name": label,
                             "value": 0.0,
                             "group": _daily_load_group(label),
+                            "company": _company_from_label(label),
+                            "meter_number": meter_number,
+                            "substation": active_substation,
                             "source": "daily_summary",
                             "kind": "load_point",
                             "period": period,
@@ -1103,6 +1284,11 @@ def build_energy_business_dashboard(
     top_external = sorted(consumers, key=lambda item: float(item["value"]), reverse=True)[:8]
     outgoing_35kv = sorted(latest_details.get("outgoing_35kv", []), key=lambda item: float(item["value"]), reverse=True)
     external_groups = sorted(latest_details.get("external_groups", []), key=lambda item: float(item["value"]), reverse=True)
+    external_substations = sorted(
+        latest_details.get("external_substations", []),
+        key=lambda item: float(item["value"]),
+        reverse=True,
+    )
 
     latest_total = float(latest["total_kwh"]) if latest else 0.0
     previous_total = float(previous["total_kwh"]) if previous else 0.0
@@ -1111,6 +1297,38 @@ def build_energy_business_dashboard(
     latest_external = float(latest["external_kwh"]) if latest else 0.0
     latest_reported = float(latest["reported_total_kwh"]) if latest and latest["reported_total_kwh"] is not None else None
     latest_recalculation_difference = latest_total - latest_reported if latest_reported is not None else None
+    external_detail_total = sum(float(item.get("value") or 0) for item in external_substations)
+    external_detail_difference = latest_external - external_detail_total
+
+    if forecast.get("status") == "ready":
+        forecast_total = float(forecast.get("forecast_total_kwh") or 0)
+        forecast_own = float(forecast.get("own_kwh") or 0)
+        forecast_external = float(forecast.get("external_kwh") or 0)
+        forecast["segments"] = [
+            {
+                "id": "kazakhoil",
+                "name": "Казахойл",
+                "value": forecast_own,
+                "share": forecast_own / forecast_total if forecast_total else 0,
+            },
+            {
+                "id": "external",
+                "name": "Внешние потребители",
+                "value": forecast_external,
+                "share": forecast_external / forecast_total if forecast_total else 0,
+            },
+        ]
+        substation_basis = external_detail_total or latest_external
+        forecast["substations"] = [
+            {
+                "id": _slug(str(item["name"])),
+                "name": item["name"],
+                "source_kwh": float(item["value"]),
+                "share": float(item["value"]) / substation_basis if substation_basis else 0,
+                "forecast_kwh": forecast_external * float(item["value"]) / substation_basis if substation_basis else 0,
+            }
+            for item in external_substations
+        ]
 
     direction = "вырос" if (mom_change or 0) >= 0 else "снизился"
     change_text = f"{abs((mom_change or 0) * 100):.1f}".replace(".", ",")
@@ -1155,6 +1373,7 @@ def build_energy_business_dashboard(
         "daily_series": daily_series,
         "outgoing_35kv": outgoing_35kv,
         "external_groups": external_groups,
+        "external_substations": external_substations,
         "external_consumers": sorted(consumers, key=lambda item: float(item["value"]), reverse=True),
         "top_external_consumers": top_external,
         "reconciliation": reconciliation,
@@ -1166,12 +1385,190 @@ def build_energy_business_dashboard(
             "reported_total_kwh": latest_reported,
             "recalculation_difference_kwh": latest_recalculation_difference,
             "recalculation_difference_pct": latest_recalculation_difference / latest_reported if latest_reported and latest_recalculation_difference is not None else None,
+            "external_detail_total_kwh": external_detail_total,
+            "external_detail_difference_kwh": external_detail_difference,
+            "external_detail_complete": abs(external_detail_difference) <= max(1.0, abs(latest_external) * 0.0001),
         },
         "insight": insight,
         "warnings": [
             "Стоимость не рассчитана: billable boundary и правило тарификации не утверждены.",
             "Daily/monthly сверка выполнена только по общей контрольной границе трёх вводов.",
         ],
+    }
+
+
+def _latest_eligible_batch(db: Session, dataset_kind: DatasetKind) -> ImportBatch | None:
+    batches = db.scalars(
+        select(ImportBatch)
+        .where(ImportBatch.dataset_kind == dataset_kind)
+        .where(ImportBatch.status.in_((ImportStatus.ready_to_publish, ImportStatus.published)))
+    ).all()
+    dated = [
+        (period_info[0], batch)
+        for batch in batches
+        if (period_info := _period_from_filename(batch.original_filename)) is not None
+    ]
+    return max(dated, key=lambda item: item[0])[1] if dated else None
+
+
+def build_technical_balance_dashboard(db: Session) -> dict[str, object]:
+    batch = _latest_eligible_batch(db, DatasetKind.technical_balance)
+    energy = build_energy_business_dashboard(db)
+    if batch is None:
+        return {
+            "meta": {"dataset_kind": DatasetKind.technical_balance.value},
+            "kpis": {},
+            "series": [],
+            "breakdowns": [],
+            "table": [],
+            "insight": "Технический баланс ещё не загружен.",
+            "warnings": ["Загрузите технический баланс."],
+        }
+
+    main_rows = _rows_by_sheet(db, batch.id).get("Тех.Учёт", [])
+    active_substation = "ПС 110/35/6 кВ Казахойл"
+    table: list[dict[str, object]] = []
+    for row, cells in main_rows:
+        label = _label(cells)
+        normalized = _normalized_label(cells)
+        meter_number = _normalize_meter_number(cells[2] if len(cells) > 2 else None)
+        inferred_substation = _substation_from_label(label, meter_number)
+        if inferred_substation:
+            active_substation = inferred_substation
+        value = _consumption(cells)
+        if (
+            not label
+            or value is None
+            or "итого" in normalized
+            or normalized.startswith(("потери", "сторонние организации"))
+        ):
+            continue
+        table.append(
+            {
+                "id": f"technical-{row.row_index}-{_slug(meter_number or label)}",
+                "row": row.row_index,
+                "name": label,
+                "meter_number": meter_number,
+                "meter_type": cells[1] if len(cells) > 1 else None,
+                "coefficient": _number(cells[4] if len(cells) > 4 else None),
+                "previous": _number(cells[5] if len(cells) > 5 else None),
+                "current": _number(cells[6] if len(cells) > 6 else None),
+                "value": value,
+                "substation": active_substation,
+            }
+        )
+
+    ranked = sorted(table, key=lambda item: abs(float(item["value"])), reverse=True)
+    kpis = energy.get("kpis") or {}
+    period_info = _period_from_filename(batch.original_filename)
+    return {
+        "meta": {
+            "dataset_kind": DatasetKind.technical_balance.value,
+            "batch_id": batch.id,
+            "filename": batch.original_filename,
+            "period": period_info[0] if period_info else None,
+        },
+        "kpis": {
+            "total_kwh": kpis.get("total_kwh", 0),
+            "own_kwh": kpis.get("own_kwh", 0),
+            "external_kwh": kpis.get("external_kwh", 0),
+            "objects": len(table),
+        },
+        "series": [
+            {"name": item["name"], "value": item["value"], "substation": item["substation"]}
+            for item in ranked[:30]
+        ],
+        "breakdowns": energy.get("external_substations") or [],
+        "table": ranked,
+        "insight": "Показания пересчитаны независимо по коэффициенту каждого прибора учёта.",
+        "warnings": energy.get("warnings") or [],
+    }
+
+
+def build_daily_consumption_dashboard(db: Session) -> dict[str, object]:
+    batch = _latest_eligible_batch(db, DatasetKind.daily_summary)
+    if batch is None:
+        return {
+            "meta": {"dataset_kind": DatasetKind.daily_summary.value},
+            "kpis": {},
+            "series": [],
+            "breakdowns": [],
+            "table": [],
+            "insight": "Ежедневная сводка ещё не загружена.",
+            "warnings": ["Загрузите ежедневную сводку."],
+        }
+
+    loads: dict[str, dict[str, object]] = {}
+    daily_totals: list[dict[str, object]] = []
+    sheets = _rows_by_sheet(db, batch.id)
+    period_info = _period_from_filename(batch.original_filename)
+    period = period_info[0] if period_info else None
+    for sheet_name, rows in sheets.items():
+        controlled_total = 0.0
+        in_load_section = False
+        active_substation = "ПС 110/35/6 кВ Казахойл"
+        for _, cells in rows:
+            label = _label(cells)
+            meter_number = _normalize_meter_number(cells[2] if len(cells) > 2 else None)
+            inferred_substation = _substation_from_label(label, meter_number)
+            if inferred_substation:
+                active_substation = inferred_substation
+            if _is_daily_load_section_end(label):
+                in_load_section = False
+                continue
+            if _is_daily_load_section_start(label):
+                in_load_section = True
+                continue
+            value = _consumption(cells)
+            if value is not None and _is_controlled_supply(label):
+                controlled_total += value
+            if not in_load_section or value is None or value <= 0 or not _is_daily_load_point(label):
+                continue
+            load_id = _daily_load_id(cells, label)
+            load = loads.setdefault(
+                load_id,
+                {
+                    "id": load_id,
+                    "name": label,
+                    "meter_number": meter_number,
+                    "substation": active_substation,
+                    "value": 0.0,
+                    "days": 0,
+                },
+            )
+            load["value"] = float(load["value"]) + value
+            load["days"] = int(load["days"]) + 1
+        daily_totals.append({"date": sheet_name, "value": controlled_total})
+
+    table = sorted(loads.values(), key=lambda item: float(item["value"]), reverse=True)
+    substation_totals: dict[str, float] = defaultdict(float)
+    for item in table:
+        substation_totals[str(item["substation"])] += float(item["value"])
+    peak = max(daily_totals, key=lambda item: float(item["value"]), default=None)
+    return {
+        "meta": {
+            "dataset_kind": DatasetKind.daily_summary.value,
+            "batch_id": batch.id,
+            "filename": batch.original_filename,
+            "period": period,
+        },
+        "kpis": {
+            "days": len(sheets),
+            "objects": len(table),
+            "total_kwh": sum(float(item["value"]) for item in table),
+            "peak_day": peak,
+        },
+        "series": [
+            {"name": item["name"], "value": item["value"], "substation": item["substation"]}
+            for item in table[:30]
+        ],
+        "breakdowns": [
+            {"name": name, "value": value}
+            for name, value in sorted(substation_totals.items(), key=lambda item: item[1], reverse=True)
+        ],
+        "table": table,
+        "insight": "Счётчики ранжированы по суммарному расходу за последний загруженный месяц.",
+        "warnings": [],
     }
 
 
