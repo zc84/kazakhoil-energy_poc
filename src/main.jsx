@@ -319,6 +319,86 @@ function EmptyState({ title, text, actionLabel = 'Нужны данные', onAc
   </div>
 }
 
+function AnalyticsBlockedState({ files, onOpenQuality, onDeleteInvalid, deletingImportIds = [] }) {
+  const [issuesByBatch, setIssuesByBatch] = useState({})
+
+  useEffect(() => {
+    let active = true
+    const ids = files.map(item => item.id).filter(Boolean)
+    if (!ids.length) {
+      setIssuesByBatch({})
+      return undefined
+    }
+    ;(async () => {
+      const entries = await Promise.all(ids.map(async id => {
+        const issues = await fetchImportIssues(id).catch(() => [])
+        return [id, issues]
+      }))
+      if (active) setIssuesByBatch(Object.fromEntries(entries))
+    })()
+    return () => { active = false }
+  }, [files.map(item => item.id).join(',')])
+
+  const totalRows = files.reduce((sum, item) => sum + Number(item.total_rows || 0), 0)
+
+  return <section className="analytics-blocked">
+    <div className="analytics-blocked-hero">
+      <span><AlertTriangle/></span>
+      <div>
+        <small>РАСЧЁТЫ ПРИОСТАНОВЛЕНЫ</small>
+        <h2>Аналитика недоступна: не все обязательные файлы прошли проверку</h2>
+        <p>{analyticsBlockReason(files)} Чтобы не показать неполную или неверную картину, графики и KPI временно скрыты.</p>
+      </div>
+    </div>
+    <div className="analytics-blocked-summary">
+      <div><b>{fmt(files.length)}</b><span>файлов требуют исправления</span></div>
+      <div><b>{fmt(totalRows)}</b><span>строк не участвуют в аналитике</span></div>
+      <div><b>0</b><span>расчётов построено по неполной пачке</span></div>
+    </div>
+    <Card title="Что мешает построить аналитику" subtitle="Конкретные ошибки ETL по обязательным файлам">
+      <div className="analytics-blocked-list">
+        {files.map(file => {
+          const issues = issuesByBatch[file.id] || []
+          const reason = formatValidationReason(file, issues)
+          const details = formatValidationDetails(file, issues)
+          return <article key={file.id}>
+            <FileSpreadsheet/>
+            <div>
+              <b>{file.original_filename}</b>
+              <p>{reason}</p>
+              <small>{details}</small>
+            </div>
+            <div className="analytics-blocked-row-actions">
+              <Status value="С ошибкой"/>
+              <button
+                type="button"
+                onClick={() => onDeleteInvalid?.(file)}
+                disabled={deletingImportIds.includes(file.id)}
+                title="Удалить файл, не прошедший валидацию"
+              >
+                <Trash2/> {deletingImportIds.includes(file.id) ? 'Удаляем…' : 'Удалить'}
+              </button>
+            </div>
+          </article>
+        })}
+      </div>
+      <div className="analytics-blocked-action">
+        <p>Исправьте перечисленные файлы или загрузите версию в поддерживаемом шаблоне. После успешной проверки аналитика откроется автоматически.</p>
+        <div>
+          <a
+            className="export"
+            href="/templates/energopulse-daily-summary-template.xlsx"
+            download="Шаблон ежедневной сводки ЭнергоПульс.xlsx"
+          >
+            <Download/> Скачать Excel-шаблон
+          </a>
+          <button type="button" className="export primary" onClick={onOpenQuality}>Открыть исходные данные <ArrowRight/></button>
+        </div>
+      </div>
+    </Card>
+  </section>
+}
+
 function ReadinessCard({ icon: Icon, eyebrow, title, text, tone = 'green' }) {
   return <article className={`readiness-card ${tone}`}>
     <div className="readiness-icon"><Icon/></div>
@@ -398,6 +478,22 @@ function mapBatchStatus(status) {
   return 'Обрабатывается'
 }
 
+function isImportReady(batch) {
+  return batch
+    && batch.dataset_kind !== 'unknown'
+    && Number(batch.error_count || 0) === 0
+    && ['ready_to_publish', 'published', 'uploaded'].includes(batch.status)
+}
+
+function isCriticalImportIssue(batch) {
+  return Boolean(batch)
+    && (
+      batch.dataset_kind === 'unknown'
+      || Number(batch.error_count || 0) > 0
+      || ['needs_review', 'failed', 'rejected'].includes(batch.status)
+    )
+}
+
 function mapDatasetKind(kind) {
   if (kind === 'technical_balance') return 'Технический баланс'
   if (kind === 'daily_summary') return 'Ежедневная сводка'
@@ -409,6 +505,7 @@ function mapIssueRule(rule) {
     EMPTY_FILE: 'Пустой файл',
     NO_SHEETS: 'Нет листов',
     UNSUPPORTED_EXTENSION: 'Неподдерживаемый формат',
+    UNSUPPORTED_DATASET_FORMAT: 'Шаблон не распознан',
     MISSING_DEPENDENCY: 'Сервис не готов к обработке',
   }
   return labels[rule] || 'Дополнительная проверка'
@@ -419,9 +516,57 @@ function mapIssueMessage(issue) {
     EMPTY_FILE: 'В загруженном файле нет строк, доступных для чтения.',
     NO_SHEETS: 'В книге нет доступных листов.',
     UNSUPPORTED_EXTENSION: 'Формат файла не поддерживается.',
+    UNSUPPORTED_DATASET_FORMAT: 'Структура файла не соответствует поддерживаемым шаблонам.',
     MISSING_DEPENDENCY: 'Сервис пока не готов к обработке этого формата.',
   }
   return messages[issue.rule_code] || issue.message
+}
+
+async function fetchImportIssues(batchId) {
+  const response = await apiFetch(`/api/v1/imports/${batchId}/issues`)
+  if (!response.ok) return []
+  return parseJsonResponse(response)
+}
+
+async function deleteImportBatch(batchId) {
+  const response = await apiFetch(`/api/v1/imports/${batchId}`, { method: 'DELETE' })
+  if (!response.ok) throw new Error(await readApiError(response, 'Не удалось удалить файл'))
+  return parseJsonResponse(response)
+}
+
+function formatValidationReason(batch, issues = []) {
+  const primaryIssue = issues.find(issue => issue.severity === 'error') || issues[0]
+  if (primaryIssue) return mapIssueMessage(primaryIssue)
+  if (batch?.dataset_kind === 'unknown') return 'Структура файла не соответствует поддерживаемым шаблонам.'
+  if (Number(batch?.error_count || 0) > 0) return 'Файл содержит ошибки проверки.'
+  return ''
+}
+
+function formatValidationDetails(batch, issues = []) {
+  const primaryIssue = issues.find(issue => issue.severity === 'error') || issues[0]
+  if (primaryIssue) {
+    const location = [
+      primaryIssue.sheet_name ? `лист «${primaryIssue.sheet_name}»` : '',
+      primaryIssue.row_index ? `строка ${primaryIssue.row_index}` : '',
+    ].filter(Boolean).join(', ')
+    return [
+      `ETL-правило: ${mapIssueRule(primaryIssue.rule_code)} (${primaryIssue.rule_code}).`,
+      location ? `Место: ${location}.` : '',
+      `Детали: ${primaryIssue.message || mapIssueMessage(primaryIssue)}`,
+    ].filter(Boolean).join('\n')
+  }
+  if (batch?.dataset_kind === 'unknown') {
+    return 'ETL не смог сопоставить структуру книги с поддерживаемыми шаблонами: ежедневная сводка с листами DD.MM или технический баланс.'
+  }
+  return 'Подробности ошибки ETL недоступны.'
+}
+
+function analyticsBlockReason(files) {
+  const unknownCount = files.filter(item => item.dataset_kind === 'unknown').length
+  if (unknownCount === files.length) {
+    return 'Часть обязательных файлов не соответствует поддерживаемому шаблону ETL.'
+  }
+  return 'В обязательных исходных файлах есть ошибки проверки.'
 }
 
 function consumerKey(name) {
@@ -505,6 +650,10 @@ function useImportsState() {
     setError('')
   }
 
+  const removeImport = batchId => {
+    setImports(current => current.filter(item => item.id !== batchId))
+  }
+
   const loadImports = async () => {
     setLoading(true)
     setError('')
@@ -513,18 +662,20 @@ function useImportsState() {
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const data = await parseJsonResponse(response)
       setImports(data)
+      return data
     } catch (err) {
       setError(err.message || 'Ошибка загрузки')
+      throw err
     } finally {
       setLoading(false)
     }
   }
 
   useEffect(() => {
-    loadImports()
+    loadImports().catch(() => {})
   }, [])
 
-  return { imports, loading, error, reload: loadImports, mergeImports }
+  return { imports, loading, error, reload: loadImports, mergeImports, removeImport }
 }
 
 function Overview({ onOpenUpload, onOpenQuality, onOpenResult, onOpenDaily, importsState }) {
@@ -639,6 +790,9 @@ function Overview({ onOpenUpload, onOpenQuality, onOpenResult, onOpenDaily, impo
             <strong>{item.value}</strong>
           </div>)}
         </div>
+        {!error && !hasImports && <button type="button" className="overview-upload-cta" onClick={onOpenUpload}>
+          <Upload/> Загрузить файлы
+        </button>}
         <div className="overview-hero-metrics">
           <span><strong>{metric(imports.length)}</strong> файлов</span>
           <span><strong>{metric(readyFiles)}</strong> готовы</span>
@@ -1021,6 +1175,7 @@ function EnergyBusinessDashboard({ hasImports, onOpenQuality }) {
   const externalSubstationsTotal = externalSubstations.reduce((sum, item) => sum + Number(item.value || 0), 0)
   const monthlyComposition = monthly.slice(-3)
   const dailySignals = buildDailySignals(daily)
+  const hasDailySeries = daily.length > 0
   const anomalySummary = dailySignals.events.length
     ? `${fmt(dailySignals.events.length)} заметных изменений: ${dailySignals.events.filter(item => item.delta > 0).length} повышений и ${dailySignals.events.filter(item => item.delta < 0).length} спадов относительно предыдущего дня.`
     : 'Резких спадов и повышений относительно предыдущего дня не найдено.'
@@ -1082,44 +1237,54 @@ function EnergyBusinessDashboard({ hasImports, onOpenQuality }) {
       <Card
         className="span-7 energy-chart-card energy-chart-row-primary"
         title="Дневная нагрузка"
-        subtitle={`${fmt(kpis.coverage_days)} дней · контролируемый вход`}
-        action={<div className="chart-card-actions">
+        subtitle={hasDailySeries ? `${fmt(kpis.coverage_days)} дней · контролируемый вход` : 'Нет ежедневной сводки для суточного ряда'}
+        action={hasDailySeries ? <div className="chart-card-actions">
           <div className="peak-chip"><span/> Пик {dateLabel(kpis.peak_day?.date)} · {fmt(kpis.peak_day?.value)} кВт·ч</div>
           <button className="chart-expand-btn" type="button" onClick={() => setFullscreenChart('daily')} title="Открыть график на весь экран" aria-label="Открыть график на весь экран"><Maximize2/></button>
-        </div>}
+        </div> : <div className="peak-chip neutral"><span/> Суточный ряд не найден</div>}
       >
-        <div className="energy-chart daily-chart">
-          <Suspense fallback={<div className="result-chart-fallback">Строим дневной профиль…</div>}>
-            <EnergyBusinessCharts kind="daily" data={daily} peakDay={kpis.peak_day} controlLimit={dailySignals.controlLimit}/>
-          </Suspense>
-        </div>
-        <div className="load-signal-summary">
-          <div><small>ПОРОГ ПИКОВОГО ДНЯ</small><b>{fmt(dailySignals.controlLimit)} кВт·ч</b></div>
-          <p>{anomalySummary} Дни выше этого уровня считаются пиковыми.</p>
-        </div>
-        <button
-          className={`load-signal-toggle ${dailySignalsExpanded ? 'expanded' : ''}`}
-          type="button"
-          onClick={() => setDailySignalsExpanded(value => !value)}
-        >
-          <span>{dailySignals.events.length ? `Изменения нагрузки: ${fmt(dailySignals.events.length)}` : 'Резких изменений нет'}</span>
-          <ChevronDown/>
-        </button>
-        {dailySignalsExpanded && <div className="load-signal-list">
-          {dailySignals.events.length ? dailySignals.events.map(item => <div key={`${item.date}-${item.delta}`}>
-            <span className={item.delta >= 0 ? 'rise' : 'fall'}>{item.direction}</span>
-            <b>{dateLabel(item.date)}</b>
-            <small>Контролируемый вход</small>
-            <strong>{item.delta >= 0 ? '+' : '−'}{fmt(Math.abs(item.delta))} кВт·ч</strong>
-          </div>) : <div>
-            <span>Норма</span>
-            <b>{latestPeriodLabel}</b>
-            <small>Контролируемый вход</small>
-            <strong>Без резких изменений</strong>
+        {hasDailySeries ? <>
+          <div className="energy-chart daily-chart">
+            <Suspense fallback={<div className="result-chart-fallback">Строим дневной профиль…</div>}>
+              <EnergyBusinessCharts kind="daily" data={daily} peakDay={kpis.peak_day} controlLimit={dailySignals.controlLimit}/>
+            </Suspense>
+          </div>
+          <div className="load-signal-summary">
+            <div><small>ПОРОГ ПИКОВОГО ДНЯ</small><b>{fmt(dailySignals.controlLimit)} кВт·ч</b></div>
+            <p>{anomalySummary} Дни выше этого уровня считаются пиковыми.</p>
+          </div>
+          <button
+            className={`load-signal-toggle ${dailySignalsExpanded ? 'expanded' : ''}`}
+            type="button"
+            onClick={() => setDailySignalsExpanded(value => !value)}
+          >
+            <span>{dailySignals.events.length ? `Изменения нагрузки: ${fmt(dailySignals.events.length)}` : 'Резких изменений нет'}</span>
+            <ChevronDown/>
+          </button>
+          {dailySignalsExpanded && <div className="load-signal-list">
+            {dailySignals.events.length ? dailySignals.events.map(item => <div key={`${item.date}-${item.delta}`}>
+              <span className={item.delta >= 0 ? 'rise' : 'fall'}>{item.direction}</span>
+              <b>{dateLabel(item.date)}</b>
+              <small>Контролируемый вход</small>
+              <strong>{item.delta >= 0 ? '+' : '−'}{fmt(Math.abs(item.delta))} кВт·ч</strong>
+            </div>) : <div>
+              <span>Норма</span>
+              <b>{latestPeriodLabel}</b>
+              <small>Контролируемый вход</small>
+              <strong>Без резких изменений</strong>
+            </div>}
           </div>}
+        </> : <div className="daily-load-missing">
+          <AlertTriangle/>
+          <div>
+            <small>ПОЧЕМУ НЕТ ГРАФИКА</small>
+            <h3>В загруженном файле есть итоги за месяц, но нет разбивки по дням</h3>
+            <p>Чтобы показать дневную нагрузку, загрузите ежедневную сводку за этот же месяц. После загрузки график появится автоматически.</p>
+          </div>
+          <button type="button" onClick={onOpenQuality}>Открыть загрузки <ArrowRight/></button>
         </div>}
       </Card>
-      {fullscreenChart === 'daily' && <div className="chart-fullscreen" role="dialog" aria-modal="true" aria-label="Дневная нагрузка" onClick={() => setFullscreenChart(null)}>
+      {hasDailySeries && fullscreenChart === 'daily' && <div className="chart-fullscreen" role="dialog" aria-modal="true" aria-label="Дневная нагрузка" onClick={() => setFullscreenChart(null)}>
         <section onClick={event => event.stopPropagation()}>
           <header>
             <div>
@@ -2047,6 +2212,71 @@ function UploadProgressWidget({ progress, onClose }) {
   </aside>
 }
 
+function UploadValidationDialog({ report, onClose, onDeleteRejected, deletingImportIds = [] }) {
+  if (!report) return null
+  const accepted = report.results.filter(item => item.status === 'accepted')
+  const rejected = report.results.filter(item => item.status === 'rejected')
+  const title = rejected.length
+    ? 'Проверка файлов завершена с замечаниями'
+    : 'Все файлы прошли проверку'
+
+  return <div className="validation-dialog-backdrop" role="presentation">
+    <section className="validation-dialog" role="dialog" aria-modal="true" aria-labelledby="validation-dialog-title">
+      <header>
+        <div className={`validation-dialog-icon ${rejected.length ? 'warning' : 'ok'}`}>
+          {rejected.length ? <AlertTriangle/> : <Check/>}
+        </div>
+        <div>
+          <small>РЕЗУЛЬТАТ ЗАГРУЗКИ</small>
+          <h3 id="validation-dialog-title">{title}</h3>
+          <p>{accepted.length} успешно · {rejected.length} не прошли валидацию</p>
+        </div>
+        <button type="button" onClick={onClose} aria-label="Закрыть результат проверки"><X/></button>
+      </header>
+
+      <div className="validation-dialog-body">
+        <div className="validation-group">
+          <h4><Check/> Успешно загружены</h4>
+          {accepted.length ? accepted.map(item => <article key={item.name} className="validation-file ok">
+            <FileSpreadsheet/>
+            <span><b>{item.name}</b><small>{mapDatasetKind(item.datasetKind)} · {fmt(item.rows)} строк</small></span>
+          </article>) : <p className="validation-empty">Нет файлов, прошедших проверку.</p>}
+        </div>
+
+        <div className="validation-group">
+          <h4><AlertTriangle/> Не прошли валидацию</h4>
+          {rejected.length ? rejected.map(item => <article key={item.name} className="validation-file bad">
+            <FileSpreadsheet/>
+            <span>
+              <b>{item.name}</b>
+              <small><strong>Что не прошло:</strong> {item.reason}</small>
+            </span>
+            <div className="validation-file-actions">
+              <span className="validation-tooltip-wrap">
+                <button type="button" aria-label={`Подробности ошибки ETL для ${item.name}`}>?</button>
+                <i role="tooltip">{item.details}</i>
+              </span>
+              {item.batchId && <button
+                type="button"
+                className="validation-delete-btn"
+                onClick={() => onDeleteRejected?.(item)}
+                disabled={deletingImportIds.includes(item.batchId)}
+                title="Удалить файл из загрузок"
+              >
+                <Trash2/> {deletingImportIds.includes(item.batchId) ? 'Удаляем…' : 'Удалить'}
+              </button>}
+            </div>
+          </article>) : <p className="validation-empty">Ошибок формата не найдено.</p>}
+        </div>
+      </div>
+
+      <footer>
+        <button type="button" className="export primary" onClick={onClose}>Понятно</button>
+      </footer>
+    </section>
+  </div>
+}
+
 function parseInsightBrief(insight) {
   if (!insight?.content) return null
   try {
@@ -2206,7 +2436,6 @@ function ImportIntelligenceBrief({ insight, notice, sourceImport, onDismiss, onO
       <div className="brief-confidence">
         <small>Надёжность вывода · {brief.confidence.label}</small>
         <p>{brief.confidence.basis}</p>
-        <span className="brief-model">Проверено моделью {insight.model}</span>
       </div>
       <div className="brief-actions">
         <button type="button" className="quiet" onClick={onOpenData}>{dataActionLabel}</button>
@@ -2216,7 +2445,15 @@ function ImportIntelligenceBrief({ insight, notice, sourceImport, onDismiss, onO
   </section>
 }
 
-function Quality({ importsState, onUploadComplete, onOpenChat, onOpenIntegrations }) {
+function Quality({
+  importsState,
+  onUploadComplete,
+  onUploadSettled,
+  onDeleteInvalidImport,
+  deletingImportIds = [],
+  onOpenChat,
+  onOpenIntegrations,
+}) {
   const inputRef = useRef(null)
   const { imports, loading, error, reload, mergeImports } = importsState
   const [issues, setIssues] = useState([])
@@ -2228,6 +2465,7 @@ function Quality({ importsState, onUploadComplete, onOpenChat, onOpenIntegration
   const [aiInsight, setAiInsight] = useState(null)
   const [aiNotice, setAiNotice] = useState('')
   const [lastUploadedBatchId, setLastUploadedBatchId] = useState(null)
+  const [uploadValidationReport, setUploadValidationReport] = useState(null)
 
   const loadPreview = async (batchId, { silent = false } = {}) => {
     setSelectedBatchId(batchId)
@@ -2261,6 +2499,7 @@ function Quality({ importsState, onUploadComplete, onOpenChat, onOpenIntegration
     setAiNotice('')
     setLastUploadedBatchId(null)
     setPreviewError('')
+    setUploadValidationReport(null)
     setUploadProgress({
       phase: 'uploading',
       total: files.length,
@@ -2271,6 +2510,9 @@ function Quality({ importsState, onUploadComplete, onOpenChat, onOpenIntegration
     })
     try {
       const uploadedBatches = []
+      const acceptedBatches = []
+      const rejectedBatches = []
+      const validationResults = []
       for (const [index, file] of files.entries()) {
         setUploadProgress(current => ({
           ...current,
@@ -2280,23 +2522,69 @@ function Quality({ importsState, onUploadComplete, onOpenChat, onOpenIntegration
           currentName: file.name,
           percent: 0,
         }))
-        const batch = await uploadImportFile(file, update => {
-          setUploadProgress(current => ({ ...current, ...update }))
-        })
-        uploadedBatches.push(batch)
+        try {
+          const batch = await uploadImportFile(file, update => {
+            setUploadProgress(current => ({ ...current, ...update }))
+          })
+          uploadedBatches.push(batch)
+          mergeImports([batch])
+          const issueDetails = (!isImportReady(batch) || Number(batch.error_count || 0) > 0)
+            ? await fetchImportIssues(batch.id).catch(() => [])
+            : []
+          if (isImportReady(batch)) {
+            acceptedBatches.push(batch)
+            validationResults.push({
+              status: 'accepted',
+              name: batch.original_filename,
+              datasetKind: batch.dataset_kind,
+              rows: batch.total_rows,
+            })
+          } else {
+            rejectedBatches.push(batch)
+            validationResults.push({
+              status: 'rejected',
+              batchId: batch.id,
+              name: batch.original_filename,
+              datasetKind: batch.dataset_kind,
+              rows: batch.total_rows,
+              reason: formatValidationReason(batch, issueDetails),
+              details: formatValidationDetails(batch, issueDetails),
+            })
+          }
+        } catch (fileError) {
+          validationResults.push({
+            status: 'rejected',
+            name: file.name,
+            datasetKind: 'unknown',
+            rows: 0,
+            reason: fileError.message || 'Файл не удалось загрузить.',
+            details: fileError.message || 'Файл не удалось загрузить в ETL-процесс.',
+          })
+        }
         setUploadProgress(current => ({ ...current, completed: index + 1 }))
       }
 
-      const lastBatch = uploadedBatches[uploadedBatches.length - 1]
-      setLastUploadedBatchId(lastBatch.id)
-      setToast(uploadedBatches.length === 1
-        ? `${lastBatch.original_filename} готов к работе`
-        : `${uploadedBatches.length} файлов готовы к работе`
+      const lastBatch = acceptedBatches[acceptedBatches.length - 1]
+      setLastUploadedBatchId(lastBatch?.id || null)
+      setUploadValidationReport({ results: validationResults })
+      const rejectedCount = validationResults.filter(item => item.status === 'rejected').length
+      onUploadSettled?.({ uploadedBatches, acceptedBatches, rejectedBatches, validationResults })
+      setToast(rejectedCount
+        ? `${acceptedBatches.length} файлов прошли проверку, ${rejectedCount} требуют внимания`
+        : acceptedBatches.length === 1
+          ? `${lastBatch.original_filename} готов к работе`
+          : `${acceptedBatches.length} файлов готовы к работе`
       )
-      mergeImports(uploadedBatches)
+      if (uploadedBatches.length) {
+        mergeImports(uploadedBatches)
+      }
       await reload().catch(() => {})
       setAiNotice('')
-      try {
+      if (rejectedCount > 0) {
+        setAiNotice('')
+      } else if (!lastBatch) {
+        setAiNotice('')
+      } else try {
         const aiSettingsResponse = await apiFetch('/api/v1/ai/settings')
         const aiSettings = aiSettingsResponse.ok ? await parseJsonResponse(aiSettingsResponse) : null
         if (!aiSettings?.has_api_key) {
@@ -2339,9 +2627,29 @@ function Quality({ importsState, onUploadComplete, onOpenChat, onOpenIntegration
   const score = imports.length ? Math.max(0, 100 - totalWarnings * 3 - totalErrors * 10).toFixed(1).replace('.', ',') : '0,0'
   const historyUnavailable = Boolean(error)
   const resultImport = imports.find(item => item.id === (aiInsight?.batch_id || lastUploadedBatchId))
+  const selectedImport = imports.find(item => item.id === selectedBatchId)
+  const handleDeleteInvalidImport = async item => {
+    const batchId = Number(item?.batchId || item?.id || item)
+    if (!batchId) return
+    const deleted = await onDeleteInvalidImport?.(item)
+    if (!deleted) return
+    setUploadValidationReport(current => current
+      ? { ...current, results: current.results.filter(result => result.batchId !== batchId) }
+      : current
+    )
+    if (selectedBatchId === batchId) {
+      setSelectedBatchId(null)
+      setIssues([])
+    }
+    if (lastUploadedBatchId === batchId) {
+      setLastUploadedBatchId(null)
+      setAiInsight(null)
+      setAiNotice('')
+    }
+  }
   const displayedIssues = issues.map(issue => ({
     sheet: issue.sheet_name || 'n/a',
-    file: imports.find(item => item.id === selectedBatchId)?.original_filename || 'n/a',
+    file: selectedImport?.original_filename || 'n/a',
     field: mapIssueRule(issue.rule_code),
     issue: mapIssueMessage(issue),
     row: issue.row_index || '—',
@@ -2359,6 +2667,12 @@ function Quality({ importsState, onUploadComplete, onOpenChat, onOpenIntegration
     {toast && <div className="toast"><Check/> {toast} <button onClick={()=>setToast('')}><X/></button></div>}
     {previewError && <div className="toast" style={{ background: '#b42318' }}><AlertTriangle/> {previewError} <button onClick={()=>setPreviewError('')}><X/></button></div>}
     <UploadProgressWidget progress={uploadProgress} onClose={() => setUploadProgress(null)}/>
+    <UploadValidationDialog
+      report={uploadValidationReport}
+      onClose={() => setUploadValidationReport(null)}
+      onDeleteRejected={handleDeleteInvalidImport}
+      deletingImportIds={deletingImportIds}
+    />
     {(aiInsight || aiNotice) && <ImportIntelligenceBrief
       insight={aiInsight}
       notice={aiNotice}
@@ -2385,12 +2699,54 @@ function Quality({ importsState, onUploadComplete, onOpenChat, onOpenIntegration
       <KpiCard icon={FileCheck2} label="Готовы к расчёту" value={`${successfulImports} / ${imports.length}`} unit="" note="проверка завершена" tone="blue"/>
     </div>
     <Card title="История загрузок" subtitle="Файлы и результаты проверки">
-      <div className="data-table dq-table">
-        <div className="tr th"><span>№</span><span>Файл</span><span>Тип данных</span><span>Состояние</span><span>Строк</span><span>Замечания</span></div>
-        {imports.length ? imports.map(item => <button className={`tr ${selectedBatchId===item.id?'selected':''}`} key={item.id} onClick={()=>loadPreview(item.id)}><span>{item.id}</span><span className="file-name">{item.original_filename}</span><span>{mapDatasetKind(item.dataset_kind)}</span><span><Status value={mapBatchStatus(item.status)}/></span><span>{fmt(item.total_rows)}</span><span>{item.error_count}</span></button>) : <div className="tr"><span>—</span><span>История загрузок появится после первого файла</span><span>—</span><span>—</span><span>—</span><span>—</span></div>}
+      <div className="data-table dq-table import-history-table">
+        <div className="tr th"><span>№</span><span>Файл</span><span>Тип данных</span><span>Состояние</span><span>Строк</span><span>Замечания</span><span>Действия</span></div>
+        {imports.length ? imports.map(item => <div
+          className={`tr ${selectedBatchId===item.id?'selected':''}`}
+          key={item.id}
+          role="button"
+          tabIndex={0}
+          onClick={()=>loadPreview(item.id)}
+          onKeyDown={event => {
+            if (event.key === 'Enter' || event.key === ' ') loadPreview(item.id)
+          }}
+        >
+          <span>{item.id}</span>
+          <span className="file-name">{item.original_filename}</span>
+          <span>{mapDatasetKind(item.dataset_kind)}</span>
+          <span><Status value={mapBatchStatus(item.status)}/></span>
+          <span>{fmt(item.total_rows)}</span>
+          <span>{item.error_count}</span>
+          <span>
+            {isCriticalImportIssue(item) ? <button
+              type="button"
+              className="row-delete-btn"
+              onClick={event => {
+                event.stopPropagation()
+                handleDeleteInvalidImport(item)
+              }}
+              disabled={deletingImportIds.includes(item.id)}
+              title="Удалить файл, не прошедший валидацию"
+            >
+              <Trash2/> {deletingImportIds.includes(item.id) ? 'Удаляем…' : 'Удалить'}
+            </button> : <small className="row-action-muted">—</small>}
+          </span>
+        </div>) : <div className="tr"><span>—</span><span>История загрузок появится после первого файла</span><span>—</span><span>—</span><span>—</span><span>—</span><span>—</span></div>}
       </div>
     </Card>
-    <Card title="Замечания" subtitle={selectedBatchId ? imports.find(item => item.id === selectedBatchId)?.original_filename : 'Выберите файл'}>
+    <Card
+      title="Замечания"
+      subtitle={selectedBatchId ? selectedImport?.original_filename : 'Выберите файл'}
+      action={selectedImport && isCriticalImportIssue(selectedImport) ? <button
+        type="button"
+        className="row-delete-btn"
+        onClick={() => handleDeleteInvalidImport(selectedImport)}
+        disabled={deletingImportIds.includes(selectedImport.id)}
+        title="Удалить файл, не прошедший валидацию"
+      >
+        <Trash2/> {deletingImportIds.includes(selectedImport.id) ? 'Удаляем…' : 'Удалить файл'}
+      </button> : null}
+    >
       <div className="data-table dq-table">
         <div className="tr th"><span>Лист</span><span>Файл</span><span>Правило</span><span>Проблема</span><span>Строка</span><span>Состояние</span></div>
         {loading ? <div className="tr"><span>…</span><span>Проверяем</span><span>—</span><span>Загружаем результат проверки</span><span>—</span><span><Status value="В работе"/></span></div> : displayedIssues.length ? displayedIssues.map((item, index) => <div className="tr" key={index}><span>{item.sheet}</span><span className="file-name">{item.file}</span><span><code>{item.field}</code></span><span>{item.issue}</span><span>{item.row}</span><span><Status value={item.state}/></span></div>) : <div className="tr"><span>—</span><span>{selectedBatchId ? 'Замечаний нет' : 'Выберите файл'}</span><span>—</span><span>{selectedBatchId ? 'Файл прошёл проверку' : 'Здесь появятся результаты проверки'}</span><span>—</span><span><Status value="В норме"/></span></div>}
@@ -2727,7 +3083,7 @@ function AIChat({ forcedOpen, onOpenChange, onOpenSettings }) {
 
   return <aside className="q-panel ai-chat-panel" aria-label="AI-аналитик">
     <header>
-      <div><span><BrainCircuit/></span><div><b>ЭнергоПульс AI</b><small><i/> {settingsState?.model || 'контекстный аналитик'}</small></div></div>
+      <div><span><BrainCircuit/></span><div><b>ЭнергоПульс AI</b><small><i/> Готов к анализу</small></div></div>
       <div className="ai-chat-head-actions">
         <button onClick={clearHistory} title="Очистить историю"><Trash2/></button>
         <button onClick={() => setIsOpen(false)} title="Закрыть"><X/></button>
@@ -2763,16 +3119,18 @@ function AIChat({ forcedOpen, onOpenChange, onOpenSettings }) {
   </aside>
 }
 
-function Sidebar({ page, setPage, mobile, setMobile, backendState, onResetAllData, resetting, hasDailyData, hasConsumerData }) {
+function Sidebar({ page, setPage, mobile, setMobile, backendState, onResetAllData, resetting, hasDailyData, hasConsumerData, analyticsBlocked }) {
   const backendLabel = backendState === 'pending'
     ? 'Синхронизация'
     : backendState === 'offline'
       ? 'Нет соединения'
       : 'Подключено'
   const isLocked = id =>
+    !analyticsBlocked && (
     (id === 'peaks' && !hasDailyData)
     || (id === 'consumers' && !hasConsumerData)
     || (id === 'forecast' && !hasConsumerData)
+    )
   const lockedTitle = id => {
     if (id === 'peaks') return 'Сначала загрузите ежедневную сводку'
     if (id === 'consumers') return 'Сначала загрузите ежедневную сводку или технический баланс'
@@ -2798,6 +3156,8 @@ function AppShell({ dark, setDark }) {
     () => localStorage.getItem('energy-onboarding-v1') !== 'complete'
   )
   const [resetting, setResetting] = useState(false)
+  const [uploadBlockedFiles, setUploadBlockedFiles] = useState([])
+  const [deletingImportIds, setDeletingImportIds] = useState([])
   const importsState = useImportsState()
   const hasImports = importsState.imports.length > 0
   const hasEnergyBalanceData = importsState.imports.some(item =>
@@ -2811,20 +3171,38 @@ function AppShell({ dark, setDark }) {
     && ['ready_to_publish', 'published'].includes(item.status)
   )
   const hasConsumerData = hasEnergyBalanceData || hasDailyData
+  const criticalImportFiles = importsState.imports.filter(isCriticalImportIssue)
+  const liveImportIds = new Set(importsState.imports.map(item => item.id))
+  const activeUploadBlockedFiles = uploadBlockedFiles.filter(item => item.id && liveImportIds.has(item.id))
+  const effectiveCriticalImportFiles = criticalImportFiles.length ? criticalImportFiles : activeUploadBlockedFiles
+  const analyticsBlocked = effectiveCriticalImportFiles.length > 0
+  const blockedAnalyticsPages = new Set([
+    'consumption',
+    'technicalBalance',
+    'dailyConsumption',
+    'peaks',
+    'consumers',
+    'forecast',
+    'reconciliation',
+  ])
   const consumersState = useConsumersState(hasConsumerData)
   const [consumerMappings, setConsumerMappings] = useConsumerMappings()
   const forecastReady = hasConsumerData && consumersState.consumers.length > 0 && consumersState.consumers.every(item => consumerMappings[item.id])
   const backendState = importsState.loading ? 'pending' : importsState.error ? 'offline' : 'live'
 
   useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: 'smooth' })
+  }, [page])
+
+  useEffect(() => {
     if (initialRouteHandled.current || importsState.loading) return
     initialRouteHandled.current = true
-    if (hasEnergyBalanceData) {
+    if (hasEnergyBalanceData && !analyticsBlocked) {
       localStorage.setItem('energy-onboarding-v1', 'complete')
       setOnboardingOpen(false)
       setPage(current => current === 'overview' ? 'consumption' : current)
     }
-  }, [importsState.loading, hasEnergyBalanceData])
+  }, [importsState.loading, hasEnergyBalanceData, analyticsBlocked])
 
   const openResult = () => setPage('consumption')
   const openUploadPicker = () => {
@@ -2850,6 +3228,7 @@ function AppShell({ dark, setDark }) {
       }
       await importsState.reload()
       setConsumerMappings({})
+      setUploadBlockedFiles([])
       setPage('quality')
       window.alert('Все данные удалены. Можно начать с новой загрузки.')
     } catch (err) {
@@ -2858,6 +3237,41 @@ function AppShell({ dark, setDark }) {
       setResetting(false)
     }
   }
+  const deleteInvalidImport = async item => {
+    const batchId = Number(item?.batchId || item?.id || item)
+    if (!batchId || deletingImportIds.includes(batchId)) return false
+    const source = importsState.imports.find(candidate => candidate.id === batchId) || item
+    const filename = source?.original_filename || source?.name || `загрузка №${batchId}`
+    const confirmed = window.confirm(`Удалить файл «${filename}» и результаты его проверки? Отменить это действие нельзя.`)
+    if (!confirmed) return false
+
+    setDeletingImportIds(current => [...current, batchId])
+    try {
+      await deleteImportBatch(batchId)
+      importsState.removeImport(batchId)
+      setUploadBlockedFiles(current => current.filter(file => file.id !== batchId))
+      const latestImports = await importsState.reload().catch(() => null)
+      if (latestImports) {
+        const latestBlockedIds = new Set(latestImports.filter(isCriticalImportIssue).map(file => file.id))
+        setUploadBlockedFiles(current => current.filter(file => latestBlockedIds.has(file.id)))
+      }
+      return true
+    } catch (err) {
+      window.alert(err?.message || 'Не удалось удалить файл')
+      return false
+    } finally {
+      setDeletingImportIds(current => current.filter(id => id !== batchId))
+    }
+  }
+  const analyticsBlockScreen = <AnalyticsBlockedState
+    files={effectiveCriticalImportFiles}
+    onOpenQuality={() => setPage('quality')}
+    onDeleteInvalid={deleteInvalidImport}
+    deletingImportIds={deletingImportIds}
+  />
+  const maybeBlockAnalytics = (id, screen) => analyticsBlocked && blockedAnalyticsPages.has(id)
+    ? analyticsBlockScreen
+    : screen
   const screens = {
     overview: <Overview
       onOpenUpload={openUploadPicker}
@@ -2866,16 +3280,24 @@ function AppShell({ dark, setDark }) {
       onOpenDaily={()=>setPage('peaks')}
       importsState={importsState}
     />,
-    consumption: <EnergyBusinessDashboard hasImports={hasImports} onOpenQuality={()=>setPage('quality')}/>,
-    technicalBalance: <SourceDashboard kind="technical" hasImports={hasEnergyBalanceData} onOpenQuality={()=>setPage('quality')}/>,
-    dailyConsumption: <SourceDashboard kind="daily" hasImports={hasDailyData} onOpenQuality={()=>setPage('quality')}/>,
-    peaks: <PeaksAndAnomaliesPage hasImports={hasDailyData}/>,
-    consumers: <ConsumersPage hasImports={hasConsumerData} consumersState={consumersState} mappings={consumerMappings} setMappings={setConsumerMappings}/>,
-    forecast: <ForecastPage hasImports={hasConsumerData} consumersState={consumersState} mappings={consumerMappings} forecastReady={forecastReady} onOpenConsumers={()=>setPage('consumers')}/>,
-    reconciliation: <PlaceholderPage title="Месячная сверка" text="Загрузите сопоставимые ежедневные сводки и техбалансы — здесь появятся расхождения по месяцам." importsState={importsState}/>,
+    consumption: maybeBlockAnalytics('consumption', <EnergyBusinessDashboard hasImports={hasImports} onOpenQuality={()=>setPage('quality')}/>),
+    technicalBalance: maybeBlockAnalytics('technicalBalance', <SourceDashboard kind="technical" hasImports={hasEnergyBalanceData} onOpenQuality={()=>setPage('quality')}/>),
+    dailyConsumption: maybeBlockAnalytics('dailyConsumption', <SourceDashboard kind="daily" hasImports={hasDailyData} onOpenQuality={()=>setPage('quality')}/>),
+    peaks: maybeBlockAnalytics('peaks', <PeaksAndAnomaliesPage hasImports={hasDailyData}/>),
+    consumers: maybeBlockAnalytics('consumers', <ConsumersPage hasImports={hasConsumerData} consumersState={consumersState} mappings={consumerMappings} setMappings={setConsumerMappings}/>),
+    forecast: maybeBlockAnalytics('forecast', <ForecastPage hasImports={hasConsumerData} consumersState={consumersState} mappings={consumerMappings} forecastReady={forecastReady} onOpenConsumers={()=>setPage('consumers')}/>),
+    reconciliation: maybeBlockAnalytics('reconciliation', <PlaceholderPage title="Месячная сверка" text="Загрузите сопоставимые ежедневные сводки и техбалансы — здесь появятся расхождения по месяцам." importsState={importsState}/>),
     quality: <Quality
       importsState={importsState}
       onUploadComplete={() => setPage('consumption')}
+      onDeleteInvalidImport={deleteInvalidImport}
+      deletingImportIds={deletingImportIds}
+      onUploadSettled={({ rejectedBatches }) => {
+        setUploadBlockedFiles(rejectedBatches || [])
+        if (rejectedBatches?.length) {
+          setPage(current => blockedAnalyticsPages.has(current) ? current : 'quality')
+        }
+      }}
       onOpenChat={() => setChatOpen(true)}
       onOpenIntegrations={() => setPage('aiSettings')}
     />,
@@ -2887,7 +3309,7 @@ function AppShell({ dark, setDark }) {
   const title = pageTitles[page]
 
   return <div className="app-shell">
-    <Sidebar page={page} setPage={setPage} mobile={mobile} setMobile={setMobile} backendState={backendState} onResetAllData={resetAllData} resetting={resetting} hasDailyData={hasDailyData} hasConsumerData={hasConsumerData}/>
+    <Sidebar page={page} setPage={setPage} mobile={mobile} setMobile={setMobile} backendState={backendState} onResetAllData={resetAllData} resetting={resetting} hasDailyData={hasDailyData} hasConsumerData={hasConsumerData} analyticsBlocked={analyticsBlocked}/>
     {mobile&&<div className="scrim" onClick={()=>setMobile(false)}/>}
     <div className="main">
       <header className="topbar"><button className="menu-btn" onClick={()=>setMobile(true)}><Menu/></button><div><h1>{title[0]}</h1><p>{title[1]}</p></div><div className="top-actions"><button className="theme-btn" onClick={()=>setDark(!dark)}>{dark?<Sun/>:<Moon/>}</button><button className="logout-btn"><LogOut/> <span>Выйти</span></button></div></header>

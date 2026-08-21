@@ -2,6 +2,7 @@ from datetime import date, datetime, timezone
 import csv
 import io
 import json
+from pathlib import Path
 import re
 import shutil
 
@@ -74,6 +75,24 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _is_failed_import(batch: ImportBatch) -> bool:
+    return (
+        batch.dataset_kind == DatasetKind.unknown
+        or batch.error_count > 0
+        or batch.status in {ImportStatus.needs_review, ImportStatus.failed, ImportStatus.rejected}
+    )
+
+
+def _delete_stored_import_files(batch: ImportBatch) -> int:
+    deleted = 0
+    for import_file in batch.files:
+        path = Path(import_file.storage_key)
+        if path.exists() and path.is_file():
+            path.unlink()
+            deleted += 1
+    return deleted
 
 
 @app.on_event("startup")
@@ -229,6 +248,25 @@ def get_import(batch_id: int, db: Session = Depends(get_db)) -> ImportBatch:
     if batch is None:
         raise HTTPException(status_code=404, detail="Загрузка не найдена")
     return batch
+
+
+@app.delete("/api/v1/imports/{batch_id}", tags=["imports"])
+def delete_failed_import(batch_id: int, db: Session = Depends(get_db)) -> dict[str, object]:
+    batch = get_import(batch_id, db)
+    if not _is_failed_import(batch):
+        raise HTTPException(status_code=409, detail="Можно удалить только файл, который не прошёл валидацию")
+
+    deleted_raw_files = _delete_stored_import_files(batch)
+    deleted_ai_insights = db.execute(delete(AIInsight).where(AIInsight.batch_id == batch.id)).rowcount or 0
+    db.delete(batch)
+    db.commit()
+    return {
+        "deleted": {
+            "batch_id": batch_id,
+            "raw_files": deleted_raw_files,
+            "ai_insights": deleted_ai_insights,
+        }
+    }
 
 
 @app.get("/api/v1/imports/{batch_id}/issues", response_model=list[ValidationIssueRead], tags=["imports"])

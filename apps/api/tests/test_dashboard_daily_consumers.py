@@ -9,6 +9,7 @@ from app.services.dashboard import (
     _is_daily_load_section_end,
     _is_daily_load_section_start,
     _normalize_meter_number,
+    _period_from_filename,
     _substation_from_label,
 )
 from app.services.ai import sanitize_user_facing_ai_text
@@ -34,6 +35,16 @@ class DailyConsumerExtractionTests(unittest.TestCase):
         self.assertEqual(_normalize_meter_number(51555226.0), "51555226")
         self.assertEqual(_normalize_meter_number(" LM 013843 "), "LM013843")
         self.assertEqual(_normalize_meter_number("50886614-24"), "50886614-24")
+
+    def test_period_detection_handles_composed_and_decomposed_may(self) -> None:
+        self.assertEqual(
+            _period_from_filename("5. Тех. баланс за май - 2026г.xls"),
+            ("2026-05", "Май", 2026, 5),
+        )
+        self.assertEqual(
+            _period_from_filename("5. Тех. баланс за май - 2026г.xls"),
+            ("2026-05", "Май", 2026, 5),
+        )
 
     def test_company_aliases_merge_gas_process_spellings(self) -> None:
         labels = [

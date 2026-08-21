@@ -1,6 +1,7 @@
 import json
 import math
 import re
+import unicodedata
 from calendar import monthrange
 from collections import defaultdict
 from datetime import date, timedelta
@@ -81,7 +82,7 @@ SUBSTATION_BY_METER = {
 
 
 def _period_from_filename(filename: str) -> tuple[str, str, int, int] | None:
-    normalized = filename.casefold().replace("ё", "е")
+    normalized = unicodedata.normalize("NFC", filename).casefold().replace("ё", "е")
     year_match = re.search(r"(20\d{2})", normalized)
     if year_match is None:
         return None

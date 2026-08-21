@@ -108,9 +108,10 @@ def _parse_csv(payload: bytes) -> ParsedWorkbook:
     for index, cells in enumerate(reader, start=1):
         normalized_cells = _normalize_row_values(list(cells))
         rows.append(ParsedRow("csv", index, json.dumps(normalized_cells, ensure_ascii=False)))
-    issues = _basic_issues(["csv"], rows)
+    dataset_kind = DatasetKind.unknown
+    issues = _basic_issues(["csv"], rows) + _dataset_format_issues(dataset_kind, ["csv"], rows)
     return ParsedWorkbook(
-        dataset_kind=DatasetKind.unknown,
+        dataset_kind=dataset_kind,
         total_sheets=1,
         rows=rows,
         issues=issues,
@@ -129,9 +130,10 @@ def _parse_xlsx(payload: bytes) -> ParsedWorkbook:
             rows.append(
                 ParsedRow(sheet_name, row_index, json.dumps(normalized, ensure_ascii=False, default=str))
             )
-    issues = _basic_issues(workbook.sheetnames, rows)
+    dataset_kind = _detect_dataset_kind(workbook.sheetnames)
+    issues = _basic_issues(workbook.sheetnames, rows) + _dataset_format_issues(dataset_kind, workbook.sheetnames, rows)
     return ParsedWorkbook(
-        dataset_kind=_detect_dataset_kind(workbook.sheetnames),
+        dataset_kind=dataset_kind,
         total_sheets=len(workbook.sheetnames),
         rows=rows,
         issues=issues,
@@ -154,9 +156,10 @@ def _parse_xls(payload: bytes) -> ParsedWorkbook:
                 )
             )
     sheet_names = workbook.sheet_names()
-    issues = _basic_issues(sheet_names, rows)
+    dataset_kind = _detect_dataset_kind(sheet_names)
+    issues = _basic_issues(sheet_names, rows) + _dataset_format_issues(dataset_kind, sheet_names, rows)
     return ParsedWorkbook(
-        dataset_kind=_detect_dataset_kind(sheet_names),
+        dataset_kind=dataset_kind,
         total_sheets=len(sheet_names),
         rows=rows,
         issues=issues,
@@ -182,6 +185,29 @@ def _basic_issues(sheet_names: list[str], rows: list[ParsedRow]) -> list[ParsedI
             )
         )
     return issues
+
+
+def _dataset_format_issues(
+    dataset_kind: DatasetKind,
+    sheet_names: list[str],
+    rows: list[ParsedRow],
+) -> list[ParsedIssue]:
+    if dataset_kind != DatasetKind.unknown or not rows:
+        return []
+    sheets = ", ".join(sheet_names[:5]) if sheet_names else "нет листов"
+    if len(sheet_names) > 5:
+        sheets = f"{sheets}, …"
+    return [
+        ParsedIssue(
+            severity=ValidationSeverity.error,
+            rule_code="UNSUPPORTED_DATASET_FORMAT",
+            message=(
+                "Структура файла не соответствует поддерживаемым шаблонам. "
+                "Поддерживаются ежедневные сводки с листами вида 01.01 и технические балансы. "
+                f"Найденные листы: {sheets}."
+            ),
+        )
+    ]
 
 
 def _missing_dependency(name: str) -> ParsedWorkbook:

@@ -1,4 +1,6 @@
 import json
+from pathlib import Path
+import tempfile
 import unittest
 
 from fastapi.testclient import TestClient
@@ -8,7 +10,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.db import Base, get_db
 from app.main import app
-from app.models import DatasetKind, ImportBatch, ImportStatus, StagingRow
+from app.models import DatasetKind, ImportBatch, ImportFile, ImportStatus, StagingRow, ValidationIssue, ValidationSeverity
 
 
 class DashboardEndpointTests(unittest.TestCase):
@@ -142,6 +144,49 @@ class DashboardEndpointTests(unittest.TestCase):
         payload = response.json()
         self.assertTrue(payload["data_quality"]["external_detail_complete"])
         self.assertEqual(payload["data_quality"]["external_detail_difference_kwh"], 0)
+
+    def test_delete_failed_import_removes_batch_and_raw_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            raw_file = Path(tmpdir) / "bad.xlsx"
+            raw_file.write_bytes(b"bad workbook")
+            with self.Session() as db:
+                batch = ImportBatch(
+                    original_filename="unknown.xlsx",
+                    checksum_sha256="c" * 64,
+                    status=ImportStatus.needs_review,
+                    dataset_kind=DatasetKind.unknown,
+                    total_sheets=1,
+                    total_rows=1,
+                    accepted_rows=1,
+                    error_count=1,
+                )
+                db.add(batch)
+                db.flush()
+                db.add(ImportFile(
+                    batch_id=batch.id,
+                    storage_key=str(raw_file),
+                    original_filename="unknown.xlsx",
+                    file_size_bytes=12,
+                ))
+                db.add(ValidationIssue(
+                    batch_id=batch.id,
+                    severity=ValidationSeverity.error,
+                    rule_code="UNSUPPORTED_DATASET_FORMAT",
+                    message="Шаблон не распознан",
+                ))
+                batch_id = batch.id
+                db.commit()
+
+            response = self.client.delete(f"/api/v1/imports/{batch_id}")
+
+            self.assertEqual(response.status_code, 200)
+            self.assertFalse(raw_file.exists())
+            self.assertEqual(self.client.get(f"/api/v1/imports/{batch_id}").status_code, 404)
+
+    def test_delete_valid_import_is_rejected(self) -> None:
+        response = self.client.delete("/api/v1/imports/1")
+
+        self.assertEqual(response.status_code, 409)
 
 
 if __name__ == "__main__":
