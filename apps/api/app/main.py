@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 from fastapi import Depends, FastAPI, File, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 from sqlalchemy.orm import Session, selectinload
 
 from .config import get_settings
@@ -103,6 +103,19 @@ def _delete_stored_import_files(batch: ImportBatch) -> int:
 def startup() -> None:
     settings.storage_root.mkdir(parents=True, exist_ok=True)
     Base.metadata.create_all(bind=engine)
+    _ensure_postgres_dataset_kind_values()
+
+
+def _ensure_postgres_dataset_kind_values() -> None:
+    if engine.dialect.name != "postgresql":
+        return
+    statements = [
+        "ALTER TYPE datasetkind ADD VALUE IF NOT EXISTS 'commercial_consumption'",
+    ]
+    with engine.connect() as connection:
+        autocommit_connection = connection.execution_options(isolation_level="AUTOCOMMIT")
+        for statement in statements:
+            autocommit_connection.execute(text(statement))
 
 
 @app.get("/healthz", tags=["system"])
