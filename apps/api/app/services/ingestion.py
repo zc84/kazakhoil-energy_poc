@@ -8,6 +8,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..models import DatasetKind, ValidationSeverity
+from .excel_layouts import (
+    commercial_consumption_layout_issues,
+    detect_workbook_kind,
+    technical_layout_issues,
+)
 
 try:
     import openpyxl
@@ -92,12 +97,17 @@ def parse_file(filename: str, payload: bytes) -> ParsedWorkbook:
     )
 
 
-def _detect_dataset_kind(sheet_names: list[str]) -> DatasetKind:
-    normalized = [name.strip().lower() for name in sheet_names]
-    if any("." in name and len(name) <= 5 for name in normalized):
+def _detect_dataset_kind(sheet_names: list[str], rows: list[ParsedRow]) -> DatasetKind:
+    rows_by_sheet: dict[str, list[tuple[ParsedRow, list[object]]]] = {}
+    for row in rows:
+        rows_by_sheet.setdefault(row.sheet_name, []).append((row, json.loads(row.raw_json)))
+    workbook_kind = detect_workbook_kind(sheet_names, rows_by_sheet)
+    if workbook_kind == "daily_summary":
         return DatasetKind.daily_summary
-    if any("баланс" in name or "тех" in name for name in normalized):
+    if workbook_kind == "technical_balance":
         return DatasetKind.technical_balance
+    if workbook_kind == "commercial_consumption":
+        return DatasetKind.commercial_consumption
     return DatasetKind.unknown
 
 
@@ -108,7 +118,7 @@ def _parse_csv(payload: bytes) -> ParsedWorkbook:
     for index, cells in enumerate(reader, start=1):
         normalized_cells = _normalize_row_values(list(cells))
         rows.append(ParsedRow("csv", index, json.dumps(normalized_cells, ensure_ascii=False)))
-    dataset_kind = DatasetKind.unknown
+    dataset_kind = _detect_dataset_kind(["csv"], rows)
     issues = _basic_issues(["csv"], rows) + _dataset_format_issues(dataset_kind, ["csv"], rows)
     return ParsedWorkbook(
         dataset_kind=dataset_kind,
@@ -130,7 +140,7 @@ def _parse_xlsx(payload: bytes) -> ParsedWorkbook:
             rows.append(
                 ParsedRow(sheet_name, row_index, json.dumps(normalized, ensure_ascii=False, default=str))
             )
-    dataset_kind = _detect_dataset_kind(workbook.sheetnames)
+    dataset_kind = _detect_dataset_kind(workbook.sheetnames, rows)
     issues = _basic_issues(workbook.sheetnames, rows) + _dataset_format_issues(dataset_kind, workbook.sheetnames, rows)
     return ParsedWorkbook(
         dataset_kind=dataset_kind,
@@ -156,7 +166,7 @@ def _parse_xls(payload: bytes) -> ParsedWorkbook:
                 )
             )
     sheet_names = workbook.sheet_names()
-    dataset_kind = _detect_dataset_kind(sheet_names)
+    dataset_kind = _detect_dataset_kind(sheet_names, rows)
     issues = _basic_issues(sheet_names, rows) + _dataset_format_issues(dataset_kind, sheet_names, rows)
     return ParsedWorkbook(
         dataset_kind=dataset_kind,
@@ -192,7 +202,34 @@ def _dataset_format_issues(
     sheet_names: list[str],
     rows: list[ParsedRow],
 ) -> list[ParsedIssue]:
-    if dataset_kind != DatasetKind.unknown or not rows:
+    if not rows:
+        return []
+    rows_by_sheet: dict[str, list[tuple[ParsedRow, list[object]]]] = {}
+    for row in rows:
+        rows_by_sheet.setdefault(row.sheet_name, []).append((row, json.loads(row.raw_json)))
+    if dataset_kind == DatasetKind.technical_balance:
+        return [
+            ParsedIssue(
+                severity=ValidationSeverity.error,
+                rule_code=issue.rule_code,
+                message=issue.message,
+                sheet_name=issue.sheet_name,
+                row_index=issue.row_index,
+            )
+            for issue in technical_layout_issues(rows_by_sheet)
+        ]
+    if dataset_kind == DatasetKind.commercial_consumption:
+        return [
+            ParsedIssue(
+                severity=ValidationSeverity.error,
+                rule_code=issue.rule_code,
+                message=issue.message,
+                sheet_name=issue.sheet_name,
+                row_index=issue.row_index,
+            )
+            for issue in commercial_consumption_layout_issues(rows_by_sheet)
+        ]
+    if dataset_kind != DatasetKind.unknown:
         return []
     sheets = ", ".join(sheet_names[:5]) if sheet_names else "нет листов"
     if len(sheet_names) > 5:
@@ -203,8 +240,11 @@ def _dataset_format_issues(
             rule_code="UNSUPPORTED_DATASET_FORMAT",
             message=(
                 "Структура файла не соответствует поддерживаемым шаблонам. "
-                "Поддерживаются ежедневные сводки с листами вида 01.01 и технические балансы. "
-                f"Найденные листы: {sheets}."
+                "Загрузите акт потребления с заголовками в строке 4 и данными с 5-й строки, "
+                "ежедневную сводку с дневными листами вида 01.01 или техбаланс "
+                "в утверждённом Excel-шаблоне: строки 294:305 для баланса 35 кВ, "
+                "строки 307:328 для первого блока ПС 35/6, колонки A/C/E/F/G/H для "
+                f"наименования, номера прибора, коэффициента, показаний и расхода. Найденные листы: {sheets}."
             ),
         )
     ]

@@ -1,6 +1,8 @@
 from datetime import date, timedelta
+from types import SimpleNamespace
 import unittest
 
+from app.services.excel_layouts import external_context_for_row, technical_context_for_row
 from app.services.dashboard import (
     _build_energy_forecast,
     _company_from_label,
@@ -10,7 +12,6 @@ from app.services.dashboard import (
     _is_daily_load_section_start,
     _normalize_meter_number,
     _period_from_filename,
-    _substation_from_label,
 )
 from app.services.ai import sanitize_user_facing_ai_text
 
@@ -46,22 +47,27 @@ class DailyConsumerExtractionTests(unittest.TestCase):
             ("2026-05", "Май", 2026, 5),
         )
 
-    def test_company_aliases_merge_gas_process_spellings(self) -> None:
-        labels = [
-            'ТОО"GasProces.Comp", В/гор 1',
-            'ТОО "GasProcsComp" 0,4кВ ввод-1',
-            'Ввод-1 35 кВ 35/6 "GasProsComp"',
-        ]
-        self.assertEqual({_company_from_label(label) for label in labels}, {"GasProces.Comp"})
+    def test_company_name_is_not_canonicalized(self) -> None:
+        label = 'ТОО "GasProcsComp" 0,4кВ ввод-1'
+        self.assertEqual(_company_from_label(label), label)
 
-    def test_known_meter_resolves_substation(self) -> None:
+    def test_excel_layout_resolves_context_by_row_index(self) -> None:
+        technical_rows = [
+            (SimpleNamespace(row_index=307), [None, "Node A"]),
+            (SimpleNamespace(row_index=323), ["Any label", "ARTM", "1001", None, 10, 1, 2, "=H"]),
+        ]
+        external_rows = [
+            (SimpleNamespace(row_index=29), ["External group title"]),
+            (SimpleNamespace(row_index=34), ["Any external consumer", None, "2001", None, 1, 1, 2, "=H"]),
+        ]
+
         self.assertEqual(
-            _substation_from_label('Яч.212 "Каспий нефть-2"', "51555226"),
-            "ПС 110/35/6 кВ Казахойл",
+            technical_context_for_row(323, technical_rows),
+            "Node A",
         )
         self.assertEqual(
-            _substation_from_label('яч. №11 "Казтрансойл"', "51555151"),
-            "ПС 35/6 кВ Южная",
+            external_context_for_row(34, external_rows, technical_rows),
+            "Node A",
         )
 
     def test_forecast_can_use_daily_history_without_technical_balance(self) -> None:

@@ -149,6 +149,20 @@ function DailyLoad({ data, peakDay, controlLimit }) {
   </ResponsiveContainer>
 }
 
+function OutgoingTooltip({ active, payload, label }) {
+  if (!active || !payload?.length) return null
+  const point = payload[0]?.payload || {}
+  return <div className="energy-tooltip">
+    <b>{label}</b>
+    {point.object_name && point.object_name !== label && <small>{point.object_name}</small>}
+    {point.meter_number && <small>№ ПУ: {point.meter_number} · {point.meter_number_source || 'Столбец C'}</small>}
+    {point.consumption_source && <small>Расход: {point.consumption_source}</small>}
+    <span style={{ '--series-color': payload[0].color }}>
+      <i/> Расход: <strong>{fmt(payload[0].value)} кВт·ч</strong>
+    </span>
+  </div>
+}
+
 function Outgoing35kv({ data }) {
   return <ResponsiveContainer width="100%" height="100%">
     <BarChart data={data} layout="vertical" margin={{ top: 0, right: 24, bottom: 0, left: 8 }}>
@@ -163,7 +177,7 @@ function Outgoing35kv({ data }) {
         tickLine={false}
         tick={{ fontSize: 10 }}
       />
-      <Tooltip formatter={value => [`${fmt(value)} кВт·ч`, 'Расход']} cursor={{ fill: 'var(--surface-2)' }}/>
+      <Tooltip content={<OutgoingTooltip/>} cursor={{ fill: 'var(--surface-2)' }}/>
       <Bar dataKey="value" fill={palette.own} radius={[0, 6, 6, 0]}>
         {data.map((_, index) => <Cell key={index} fill={palette.bars[index % palette.bars.length]}/>)}
       </Bar>

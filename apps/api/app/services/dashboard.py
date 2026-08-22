@@ -11,6 +11,12 @@ from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..models import DatasetKind, ImportBatch, ImportStatus, StagingRow
+from .excel_layouts import (
+    external_context_for_row,
+    select_external_sheet,
+    select_technical_sheet,
+    technical_context_for_row,
+)
 from .weather import load_weather_context
 
 MONTHS = {
@@ -41,45 +47,6 @@ MONTHS_PREPOSITIONAL = {
     11: "ноябре",
     12: "декабре",
 }
-
-COMPANY_ALIASES = {
-    "gasproces comp": "GasProces.Comp",
-    "gasprocscomp": "GasProces.Comp",
-    "gasproscomp": "GasProces.Comp",
-    "кар тел": "КАР-ТЕЛ",
-    "мобтелсервис": "МобТелСервис",
-    "моб тел сервис": "МобТелСервис",
-    "gsm казахстан": "GSM Казахстан",
-    "казахтелеком": "Казахтелеком",
-    "каспий нефть": "Каспий нефть",
-    "казтрансойл": "КазТрансОйл",
-}
-
-SUMMARY_EXTERNAL_METERS = {
-    "касп нефть 1": "51616744",
-    "касп нефть 2": "51555226",
-    "казтрансойл 1": "51555218",
-    "казтрансойл 2": "51555151",
-}
-
-SUBSTATION_BY_METER = {
-    "51097674": "ПС 35/6 кВ Север",
-    "51259257": "ПС 35/6 кВ Север",
-    "51097603": "ПС 35/6 кВ Южная",
-    "51097590": "ПС 35/6 кВ Южная",
-    "51100980": "ПС 35/6 кВ Южная",
-    "51097623": "ПС 35/6 кВ Южная",
-    "51259238": "ПС 35/6 кВ Кожасай",
-    "51259324": "ПС 35/6 кВ Кожасай",
-    "51431297": "ПС 35/6 кВ БКНС Кожасай",
-    "51431332": "ПС 35/6 кВ БКНС Кожасай",
-    "51431357": "ПС Южный Жанажол",
-    "51616744": "ПС 110/35/6 кВ Казахойл",
-    "51555226": "ПС 110/35/6 кВ Казахойл",
-    "51555218": "ПС 35/6 кВ Южная",
-    "51555151": "ПС 35/6 кВ Южная",
-}
-
 
 def _period_from_filename(filename: str) -> tuple[str, str, int, int] | None:
     normalized = unicodedata.normalize("NFC", filename).casefold().replace("ё", "е")
@@ -209,6 +176,14 @@ def _consumption(cells: list[object]) -> float | None:
     return (next_reading - current_reading) * coefficient
 
 
+def _meter_number_source() -> str:
+    return "Столбец C"
+
+
+def _consumption_source() -> str:
+    return "Расчёт: (G - F) × E"
+
+
 def _reported_consumption(cells: list[object]) -> float | None:
     return _number(cells[7]) if len(cells) > 7 else None
 
@@ -235,63 +210,7 @@ def _slug(value: str) -> str:
 
 
 def _company_from_label(label: str) -> str:
-    normalized = " ".join(
-        re.sub(r"[«»\"'.,()№/_-]+", " ", label.casefold().replace("ё", "е")).split()
-    )
-    for alias, canonical in COMPANY_ALIASES.items():
-        if alias in normalized:
-            return canonical
-
-    legal_match = re.search(
-        r"\b(?:тоо|ип|кх)\s+(.+?)(?:\s+(?:пл|площадка|кожасай|алис?бекмола|ввод|вахт|в гор|яч|упн|цпнг|ппн|0 4кв|35 6)|$)",
-        normalized,
-    )
-    if legal_match:
-        company = legal_match.group(1).strip()
-        if company:
-            return " ".join(part.capitalize() for part in company.split())
-
-    for marker, canonical in (
-        ("халиб", "Halliburton"),
-        ("сан др", "Сан-Дриллинг"),
-        ("25 корпус", "25 корпус"),
-        ("атжаксы", "Атжаксы"),
-        ("актобе техникс", "Актобе Техникс"),
-        ("шлюмберже", "Schlumberger"),
-    ):
-        if marker in normalized:
-            return canonical
-    return "Требует уточнения"
-
-
-def _substation_from_group(group: str) -> str:
-    normalized = group.casefold().replace("ё", "е")
-    if "газзавод" in normalized:
-        return "ПС 35/6 кВ Газзавод"
-    if "кожасай" in normalized:
-        return "ПС 110/35/6 кВ Кожасай"
-    if "площадка №4" in normalized:
-        return "ПС 110/35/6 кВ Казахойл"
-    return "Требует уточнения"
-
-
-def _substation_from_label(label: str, meter_number: str | None = None) -> str | None:
-    if meter_number and meter_number in SUBSTATION_BY_METER:
-        return SUBSTATION_BY_METER[meter_number]
-    normalized = label.casefold().replace("ё", "е")
-    if "южный жанажол" in normalized:
-        return "ПС Южный Жанажол"
-    if "бкнс" in normalized and "кожасай" in normalized:
-        return "ПС 35/6 кВ БКНС Кожасай"
-    if "кожасай" in normalized:
-        return "ПС 35/6 кВ Кожасай"
-    if "газзавод" in normalized:
-        return "ПС 35/6 кВ Газзавод"
-    if "пс север" in normalized or 'п/с север' in normalized:
-        return "ПС 35/6 кВ Север"
-    if "пс 35/6" in normalized and ("южн" in normalized or "юг" in normalized):
-        return "ПС 35/6 кВ Южная"
-    return None
+    return " ".join(label.split())
 
 
 def _rows_by_sheet(db: Session, batch_id: int) -> dict[str, list[tuple[StagingRow, list[object]]]]:
@@ -306,6 +225,19 @@ def _rows_by_sheet(db: Session, batch_id: int) -> dict[str, list[tuple[StagingRo
     return grouped
 
 
+def _technical_rows_from_sheets(
+    sheets: dict[str, list[tuple[StagingRow, list[object]]]],
+) -> list[tuple[StagingRow, list[object]]]:
+    return select_technical_sheet(sheets)
+
+
+def _external_rows_from_sheets(
+    sheets: dict[str, list[tuple[StagingRow, list[object]]]],
+    technical_rows: list[tuple[StagingRow, list[object]]],
+) -> list[tuple[StagingRow, list[object]]]:
+    return select_external_sheet(sheets, technical_rows)
+
+
 def _is_controlled_supply(label: str) -> bool:
     normalized = label.casefold().replace("ё", "е")
     return normalized.startswith("ввод 110кв от") or (
@@ -314,24 +246,11 @@ def _is_controlled_supply(label: str) -> bool:
 
 
 def _external_group(label: str) -> str:
-    normalized = label.casefold().replace("ё", "е")
-    if "кожасай" in normalized:
-        return "Кожасай"
-    if "газзавод" in normalized:
-        return "Газзавод"
-    if "площадка №4" in normalized or "площадка n4" in normalized:
-        return "Площадка №4"
-    return "Площадка №22 / СУПС"
+    return " ".join(label.split())
 
 
 def _controlled_supply_source(label: str) -> dict[str, str] | None:
     normalized = label.casefold().replace("ё", "е")
-    if "эмба" in normalized:
-        return {"id": "emba", "name": "ПС Эмба"}
-    if "кенкияк" in normalized:
-        return {"id": "kenkiyak", "name": "ПС Кенкияк"}
-    if "южный жанажол" in normalized:
-        return {"id": "yuzhny-zhanazhol", "name": "Южный Жанажол"}
     if _is_controlled_supply(label):
         return {"id": re.sub(r"[^a-zа-я0-9]+", "-", normalized).strip("-"), "name": label}
     return None
@@ -989,7 +908,7 @@ def build_energy_business_dashboard(
             continue
 
         sheets = _rows_by_sheet(db, batch.id)
-        main_rows = sheets.get("Тех.Учёт", [])
+        main_rows = _technical_rows_from_sheets(sheets)
         summary_index = next(
             (
                 index
@@ -1023,9 +942,9 @@ def build_energy_business_dashboard(
         external_rows: list[dict[str, object]] = []
         external_groups: dict[str, float] = defaultdict(float)
         external_substations: dict[str, float] = defaultdict(float)
-        active_group = "Прочие"
+        active_group: str | None = None
         in_summary_block = False
-        external_sheet_rows = sheets.get("Сторонние организации", [])
+        external_sheet_rows = _external_rows_from_sheets(sheets, main_rows)
         for row, cells in external_sheet_rows:
             label = _label(cells)
             normalized = _normalized_label(cells)
@@ -1045,29 +964,23 @@ def build_energy_business_dashboard(
                     summary_value = _number(cells[2] if len(cells) > 2 else None)
                 if summary_value is None or summary_value <= 0:
                     continue
-                meter_number = next(
-                    (
-                        value
-                        for marker, value in SUMMARY_EXTERNAL_METERS.items()
-                        if marker in _slug(label).replace("-", " ")
-                    ),
-                    None,
-                )
+                meter_number = None
                 company = _company_from_label(label)
-                substation = _substation_from_label(label, meter_number) or "Требует уточнения"
+                substation = external_context_for_row(row.row_index, external_sheet_rows, main_rows)
                 item = {
                     "id": f"external-{_slug(meter_number or label)}",
                     "meter_number": meter_number,
                     "name": label,
                     "value": summary_value,
-                    "group": "Отдельные внешние потребители",
+                    "group": None,
                     "company": company,
                     "substation": substation,
                     "source_row": row.row_index,
                 }
                 external_rows.append(item)
                 external_groups[company] += summary_value
-                external_substations[substation] += summary_value
+                if substation:
+                    external_substations[substation] += summary_value
                 continue
 
             value = _consumption(cells)
@@ -1075,7 +988,7 @@ def build_energy_business_dashboard(
                 continue
             meter_number = _normalize_meter_number(cells[2] if len(cells) > 2 else None)
             company = _company_from_label(label)
-            substation = _substation_from_label(label, meter_number) or _substation_from_group(active_group)
+            substation = external_context_for_row(row.row_index, external_sheet_rows, main_rows)
             item = {
                 "id": f"external-{_slug(meter_number or label)}",
                 "meter_number": meter_number,
@@ -1088,7 +1001,8 @@ def build_energy_business_dashboard(
             }
             external_rows.append(item)
             external_groups[company] += value
-            external_substations[substation] += value
+            if substation:
+                external_substations[substation] += value
 
         for _, cells in [*main_rows, *external_sheet_rows]:
             calculated = _consumption(cells)
@@ -1168,13 +1082,10 @@ def build_energy_business_dashboard(
             controlled_total = 0.0
             source_totals: dict[str, dict[str, object]] = {}
             in_load_section = False
-            active_substation = "ПС 110/35/6 кВ Казахойл"
+            active_substation = None
             for _, cells in rows:
                 label = _label(cells)
                 meter_number = _normalize_meter_number(cells[2] if len(cells) > 2 else None)
-                inferred_substation = _substation_from_label(label, meter_number)
-                if inferred_substation:
-                    active_substation = inferred_substation
                 if _is_daily_load_section_end(label):
                     in_load_section = False
                     continue
@@ -1250,18 +1161,20 @@ def build_energy_business_dashboard(
     reconciliation: list[dict[str, object]] = []
     for month in monthly_series:
         period = str(month["period"])
-        daily_total = sum(float(point["value"]) for point in daily_by_period.get(period, []))
+        period_daily_points = daily_by_period.get(period, [])
+        daily_total = sum(float(point["value"]) for point in period_daily_points)
         monthly_controlled = float(month["controlled_kwh"])
-        difference = daily_total - monthly_controlled
+        difference = daily_total - monthly_controlled if period_daily_points else None
         reconciliation.append(
             {
                 "period": period,
                 "label": month["label"],
-                "daily_kwh": daily_total,
+                "daily_kwh": daily_total if period_daily_points else None,
                 "monthly_kwh": monthly_controlled,
                 "difference_kwh": difference,
-                "difference_pct": difference / monthly_controlled if monthly_controlled else None,
-                "days": len(daily_by_period.get(period, [])),
+                "difference_pct": difference / monthly_controlled if difference is not None and monthly_controlled else None,
+                "days": len(period_daily_points),
+                "status": "ready" if period_daily_points else "missing_daily_summary",
             }
         )
 
@@ -1426,14 +1339,14 @@ def build_technical_balance_dashboard(db: Session) -> dict[str, object]:
             "warnings": ["Загрузите технический баланс."],
         }
 
-    main_rows = _rows_by_sheet(db, batch.id).get("Тех.Учёт", [])
-    active_substation = "ПС 110/35/6 кВ Казахойл"
+    main_rows = _technical_rows_from_sheets(_rows_by_sheet(db, batch.id))
+    active_substation = None
     table: list[dict[str, object]] = []
     for row, cells in main_rows:
         label = _label(cells)
         normalized = _normalized_label(cells)
         meter_number = _normalize_meter_number(cells[2] if len(cells) > 2 else None)
-        inferred_substation = _substation_from_label(label, meter_number)
+        inferred_substation = technical_context_for_row(row.row_index, main_rows)
         if inferred_substation:
             active_substation = inferred_substation
         value = _consumption(cells)
@@ -1507,13 +1420,10 @@ def build_daily_consumption_dashboard(db: Session) -> dict[str, object]:
     for sheet_name, rows in sheets.items():
         controlled_total = 0.0
         in_load_section = False
-        active_substation = "ПС 110/35/6 кВ Казахойл"
+        active_substation = None
         for _, cells in rows:
             label = _label(cells)
             meter_number = _normalize_meter_number(cells[2] if len(cells) > 2 else None)
-            inferred_substation = _substation_from_label(label, meter_number)
-            if inferred_substation:
-                active_substation = inferred_substation
             if _is_daily_load_section_end(label):
                 in_load_section = False
                 continue
@@ -1532,8 +1442,10 @@ def build_daily_consumption_dashboard(db: Session) -> dict[str, object]:
                     "id": load_id,
                     "name": label,
                     "meter_number": meter_number,
+                    "meter_number_source": _meter_number_source(),
                     "substation": active_substation,
                     "value": 0.0,
+                    "consumption_source": _consumption_source(),
                     "days": 0,
                 },
             )
@@ -1560,7 +1472,14 @@ def build_daily_consumption_dashboard(db: Session) -> dict[str, object]:
             "peak_day": peak,
         },
         "series": [
-            {"name": item["name"], "value": item["value"], "substation": item["substation"]}
+            {
+                "name": item["name"],
+                "value": item["value"],
+                "substation": item["substation"],
+                "meter_number": item.get("meter_number"),
+                "meter_number_source": item.get("meter_number_source"),
+                "consumption_source": item.get("consumption_source"),
+            }
             for item in table[:30]
         ],
         "breakdowns": [

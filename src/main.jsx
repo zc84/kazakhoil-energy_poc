@@ -7,7 +7,7 @@ import {
   AlertTriangle, ArrowRight, CalendarDays, Check, ChevronDown,
   Bot, BrainCircuit, CloudSun, Database, Download, Eye, EyeOff, Factory, FileCheck2,
   FileSpreadsheet, Filter, Gauge, Info, KeyRound, LayoutDashboard, Lock, LogOut,
-  MapPin, Maximize2, Menu, MessageCircle, Moon, Plus, RotateCcw, Save, Send,
+  MapPin, Maximize2, Menu, MessageCircle, Moon, Plus, RotateCcw, Save, Search, Send,
   Settings2, Sparkles, Sun, Thermometer, Trash2, TrendingDown, TrendingUp, Upload,
   Users, X, Zap,
 } from 'lucide-react'
@@ -30,7 +30,7 @@ const nav = [
     { id: 'quality', label: 'Исходные данные', icon: Database },
   ]},
   { section: 'СИСТЕМА', items: [
-    { id: 'aiSettings', label: 'OpenAI', icon: Settings2 },
+    { id: 'aiSettings', label: 'ЭнергоПульс AI', icon: Settings2 },
   ]},
 ]
 
@@ -44,7 +44,7 @@ const pageTitles = {
   forecast: ['Прогноз', 'Расчёт нагрузки по истории и погоде'],
   reconciliation: ['Месячная сверка', 'Сводки и технический баланс'],
   quality: ['Исходные данные', 'Файлы и протокол проверки'],
-  aiSettings: ['OpenAI', 'Подключение и параметры модели'],
+  aiSettings: ['ЭнергоПульс AI', 'Подключение и параметры модели'],
 }
 
 const PROD_API_BASE = import.meta.env?.VITE_API_BASE_URL
@@ -199,6 +199,20 @@ const fmtMonthYear = value => {
   const date = new Date(`${value}-01T00:00:00`)
   if (Number.isNaN(date.getTime())) return ''
   return new Intl.DateTimeFormat('ru-RU', { month: 'long', year: 'numeric' }).format(date)
+}
+
+function periodFromFilename(filename) {
+  const value = String(filename || '').toLocaleLowerCase('ru-RU').replace(/ё/g, 'е')
+  const year = value.match(/\b(20\d{2})\b/)?.[1]
+  if (!year) return ''
+  const months = [
+    ['январ', 1], ['феврал', 2], ['март', 3], ['апрел', 4],
+    ['май', 5], ['мая', 5], ['июн', 6], ['июл', 7],
+    ['август', 8], ['сентябр', 9], ['октябр', 10],
+    ['ноябр', 11], ['декабр', 12],
+  ]
+  const month = months.find(([stem]) => value.includes(stem))?.[1]
+  return month ? `${year}-${String(month).padStart(2, '0')}` : ''
 }
 
 function formatPeriodRange(series) {
@@ -497,6 +511,7 @@ function isCriticalImportIssue(batch) {
 function mapDatasetKind(kind) {
   if (kind === 'technical_balance') return 'Технический баланс'
   if (kind === 'daily_summary') return 'Ежедневная сводка'
+  if (kind === 'commercial_consumption') return 'Акт потребления'
   return 'Тип не определён'
 }
 
@@ -571,6 +586,13 @@ function analyticsBlockReason(files) {
 
 function consumerKey(name) {
   return String(name || '').trim().casefold?.() || String(name || '').trim().toLowerCase()
+}
+
+function mappingForConsumer(mappings, consumer) {
+  return mappings[consumer.id]
+    || mappings[consumerKey(consumer.name)]
+    || mappings[consumer.name]
+    || 'aktobe'
 }
 
 function useConsumerMappings() {
@@ -678,8 +700,136 @@ function useImportsState() {
   return { imports, loading, error, reload: loadImports, mergeImports, removeImport }
 }
 
-function Overview({ onOpenUpload, onOpenQuality, onOpenResult, onOpenDaily, importsState }) {
+function OverviewAIForecastSection({ brief, loading, error, onOpenForecast, onRetry }) {
+  if (loading && !brief) {
+    return <section className="overview-ai-forecast loading">
+      <div className="overview-ai-head">
+        <span><BrainCircuit/></span>
+        <div>
+          <small>AI ПРОГНОЗ</small>
+          <h3>AI анализирует прогноз и риски затрат</h3>
+          <p>Секция появится, если в данных достаточно истории для доказуемого вывода.</p>
+        </div>
+      </div>
+      <div className="overview-ai-loader"><i/><i/><i/></div>
+    </section>
+  }
+  if (error && !brief) {
+    return <section className="overview-ai-forecast loading error">
+      <div className="overview-ai-head">
+        <span><BrainCircuit/></span>
+        <div>
+          <small>AI ПРОГНОЗ</small>
+          <h3>AI сводка временно недоступна</h3>
+          <p>Данные для прогноза есть, но запрос к AI не завершился. Можно повторить без перезагрузки страницы.</p>
+        </div>
+      </div>
+      <button type="button" className="overview-ai-retry" onClick={onRetry}>Повторить</button>
+    </section>
+  }
+  if (!brief) return null
+
+  const sections = (brief.sections || []).filter(section => section?.title && section?.detail)
+  const weatherSection = sections.find(section => /погод|температур|осад|ветер/i.test(`${section.title} ${section.value} ${section.detail}`))
+  const primarySections = [
+    sections[0],
+    weatherSection && weatherSection !== sections[0] ? weatherSection : sections[1],
+  ].filter(Boolean)
+  const detailSections = sections.filter(section => !primarySections.includes(section))
+  const firstAction = brief.actions?.[0]
+  const detailsPreview = detailSections[0]?.value
+    || firstAction?.title
+    || brief.confidence?.label
+    || 'Ограничения и действия'
+  const detailsText = detailSections[0]?.detail
+    || firstAction?.detail
+    || brief.confidence?.basis
+    || brief.caveat
+  const sectionIcon = section => (/погод|температур|осад|ветер/i.test(`${section.title} ${section.value} ${section.detail}`)
+    ? CloudSun
+    : ({
+    positive: Check,
+    warning: Gauge,
+    critical: AlertTriangle,
+    neutral: Sparkles,
+  }[section.tone] || Sparkles))
+  const statusLabel = {
+    ready: 'Готово к планированию',
+    watch: 'Нужно наблюдение',
+    limited: 'Ограниченная надёжность',
+  }[brief.status] || 'AI прогноз'
+  const statusHint = {
+    ready: 'Сигнал устойчивый, можно использовать как рабочий ориентир.',
+    watch: 'Есть полезный ориентир, но часть факторов нужно держать под контролем.',
+    limited: 'Вывод ограничен качеством или полнотой данных.',
+  }[brief.status] || 'AI-оценка по текущим данным.'
+
+  return <section className={`overview-ai-forecast ${brief.status || 'watch'}`}>
+    <header className="overview-ai-head">
+      <span><BrainCircuit/></span>
+      <div>
+        <small>AI ПРОГНОЗ</small>
+        <p>{statusHint}</p>
+        <h3>{formatInsightText(brief.headline)}</h3>
+      </div>
+      <b className={`ai-status-pill ${brief.status || 'watch'}`}>{statusLabel}</b>
+    </header>
+    <div className="overview-ai-cubes">
+      {primarySections.map((section, index) => {
+        const Icon = sectionIcon(section)
+        return <article className={`overview-ai-cube ${section.tone || 'neutral'}`} key={`${section.title}-${index}`}>
+          <span><Icon/></span>
+          <div>
+            <em>{formatInsightLabel(section.title)}</em>
+            <strong>{formatInsightValue(section.value)}</strong>
+            <p>{formatInsightText(section.detail)}</p>
+          </div>
+        </article>
+      })}
+      <details className="overview-ai-cube overview-ai-details">
+        <summary>
+          <span><Info/></span>
+          <div>
+            <em>ДЕТАЛИ AI-ОЦЕНКИ</em>
+            <strong>{formatInsightValue(detailsPreview)}</strong>
+            <p>{formatInsightText(detailsText)}</p>
+          </div>
+          <ChevronDown/>
+        </summary>
+        <div className="overview-ai-detail-body">
+          {!!detailSections.length && <div className="overview-ai-panel">
+            <small>ДОП. ИНСАЙТЫ</small>
+            {detailSections.map((section, index) => <p key={`${section.title}-${index}`}><Sparkles/> <span><b>{formatInsightText(section.title)}</b>{formatInsightText(section.detail)}</span></p>)}
+          </div>}
+          {!!brief.actions?.length && <div className="overview-ai-panel actions">
+            <small>ДЕЙСТВИЯ</small>
+            {brief.actions.map((action, index) => <p key={`${action.title}-${index}`}><Check/> <span><b>{formatInsightText(action.title)}</b>{formatInsightText(action.detail)}</span></p>)}
+          </div>}
+          <div className="overview-ai-panel">
+            <small>НАДЁЖНОСТЬ</small>
+            <p><Info/> <span><b>{brief.confidence?.label || 'Надёжность'}</b>{formatInsightText(brief.confidence?.basis || brief.caveat)}</span></p>
+            {brief.caveat && <p><AlertTriangle/> <span>{formatInsightText(brief.caveat)}</span></p>}
+          </div>
+        </div>
+      </details>
+      <button type="button" className="overview-ai-cube overview-ai-open" onClick={onOpenForecast}>
+        <span><ArrowRight/></span>
+        <div>
+          <em>ПЕРЕХОД</em>
+          <strong>Открыть прогноз</strong>
+          <p>Сценарии, диапазон и структура расчёта.</p>
+        </div>
+      </button>
+    </div>
+  </section>
+}
+
+function Overview({ onOpenUpload, onOpenQuality, onOpenResult, onOpenDaily, onOpenForecast, importsState }) {
   const { imports, error, reload } = importsState
+  const [aiForecast, setAiForecast] = useState(null)
+  const [aiForecastLoading, setAiForecastLoading] = useState(false)
+  const [aiForecastError, setAiForecastError] = useState(false)
+  const [aiForecastReloadKey, setAiForecastReloadKey] = useState(0)
   const totalRows = imports.reduce((sum, item) => sum + item.total_rows, 0)
   const totalWarnings = imports.reduce((sum, item) => sum + item.warning_count, 0)
   const totalErrors = imports.reduce((sum, item) => sum + item.error_count, 0)
@@ -696,6 +846,24 @@ function Overview({ onOpenUpload, onOpenQuality, onOpenResult, onOpenDaily, impo
     && item.accepted_rows > 0
     && ['ready_to_publish', 'published'].includes(item.status)
   )
+  const readyTechnicalBalanceCount = imports.filter(item =>
+    item.dataset_kind === 'technical_balance'
+    && item.accepted_rows > 0
+    && ['ready_to_publish', 'published'].includes(item.status)
+  ).length
+  const canRequestAiForecast = !error && hasEnergyBalance && readyTechnicalBalanceCount >= 3
+  const importsFingerprint = imports.map(item => `${item.id}:${item.status}:${item.accepted_rows}`).join('|')
+  const overviewTodayParts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Aqtobe',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date()).reduce((map, item) => {
+    map[item.type] = item.value
+    return map
+  }, {})
+  const overviewTodayKey = `${overviewTodayParts.year}-${overviewTodayParts.month}-${overviewTodayParts.day}`
+  const aiForecastCacheKey = `energy-overview-ai-forecast-v5:${overviewTodayKey}:${importsFingerprint}`
   const readyFiles = imports.filter(item => item.status === 'published' || item.status === 'ready_to_publish').length
   const needsAttention = imports.filter(item => item.error_count > 0 || ['needs_review', 'failed', 'rejected'].includes(item.status)).length
   const metric = value => error ? '—' : fmt(value)
@@ -705,7 +873,7 @@ function Overview({ onOpenUpload, onOpenQuality, onOpenResult, onOpenDaily, impo
     : hasEnergyBalance && hasDailyData
       ? 'Расчёты выполнены'
       : hasEnergyBalance
-        ? 'Техбаланс рассчитан'
+        ? 'Энергобаланс готов'
         : hasDailyData
           ? 'Суточные данные загружены'
           : hasTechnicalBalance
@@ -716,7 +884,7 @@ function Overview({ onOpenUpload, onOpenQuality, onOpenResult, onOpenDaily, impo
     : hasEnergyBalance && hasDailyData
       ? 'Доступны энергобаланс, пики и прогноз.'
       : hasEnergyBalance
-        ? 'Для расчёта пиков нужна ежедневная сводка.'
+        ? 'Пики и аномалии появятся после загрузки ежедневной сводки.'
       : hasDailyData
           ? `Доступны суточная динамика и пики. ${hasTechnicalBalance ? 'В техбалансе есть замечания.' : 'Для структуры потребления нужен техбаланс.'}`
           : hasTechnicalBalance
@@ -739,6 +907,57 @@ function Overview({ onOpenUpload, onOpenQuality, onOpenResult, onOpenDaily, impo
         { label: 'Предупреждений', value: fmt(totalWarnings) },
       ]
       : [{ label: '', value: 'Результатов проверки пока нет.' }]
+
+  useEffect(() => {
+    if (!canRequestAiForecast) {
+      setAiForecast(null)
+      setAiForecastLoading(false)
+      setAiForecastError(false)
+      return undefined
+    }
+    try {
+      const cached = JSON.parse(localStorage.getItem(aiForecastCacheKey) || 'null')
+      if (cached?.content) {
+        setAiForecast(cached.content)
+        setAiForecastLoading(false)
+        setAiForecastError(false)
+        return undefined
+      }
+    } catch {
+      localStorage.removeItem(aiForecastCacheKey)
+    }
+    let active = true
+    setAiForecastLoading(true)
+    setAiForecastError(false)
+    apiFetch('/api/v1/ai/overview-forecast')
+      .then(async response => {
+        if (!response.ok) throw new Error(await readApiError(response, 'AI прогноз недоступен'))
+        return parseJsonResponse(response)
+      })
+      .then(data => {
+        if (!active) return
+        const content = data?.available ? data.content : null
+        setAiForecast(content)
+        setAiForecastError(false)
+        if (content) {
+          localStorage.setItem(aiForecastCacheKey, JSON.stringify({
+            content,
+            cached_at: new Date().toISOString(),
+          }))
+        }
+      })
+      .catch(() => {
+        if (!active) return
+        setAiForecast(null)
+        setAiForecastError(true)
+      })
+      .finally(() => {
+        if (active) setAiForecastLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [canRequestAiForecast, aiForecastCacheKey, aiForecastReloadKey])
 
   return <>
     <div className="hero-row">
@@ -784,12 +1003,6 @@ function Overview({ onOpenUpload, onOpenQuality, onOpenResult, onOpenDaily, impo
       <div className="overview-hero-panel">
         <small>ПРОТОКОЛ ЗАГРУЗКИ</small>
         <b>{healthTitle}</b>
-        <div className="overview-health-lines">
-          {healthDetails.map(item => <div key={`${item.label}-${item.value}`}>
-            {item.label && <span>{item.label}</span>}
-            <strong>{item.value}</strong>
-          </div>)}
-        </div>
         {!error && !hasImports && <button type="button" className="overview-upload-cta" onClick={onOpenUpload}>
           <Upload/> Загрузить файлы
         </button>}
@@ -798,8 +1011,24 @@ function Overview({ onOpenUpload, onOpenQuality, onOpenResult, onOpenDaily, impo
           <span><strong>{metric(readyFiles)}</strong> готовы</span>
           <span><strong>{metric(needsAttention > 0 ? needsAttention : totalErrors)}</strong> с замечаниями</span>
         </div>
+        <details className="overview-protocol-details">
+          <summary>Детали проверки <ChevronDown/></summary>
+          <div className="overview-health-lines">
+            {healthDetails.map(item => <div key={`${item.label}-${item.value}`}>
+              {item.label && <span>{item.label}</span>}
+              <strong>{item.value}</strong>
+            </div>)}
+          </div>
+        </details>
       </div>
     </div>
+    {canRequestAiForecast && (aiForecastLoading || aiForecast || aiForecastError) && <OverviewAIForecastSection
+      brief={aiForecast}
+      loading={aiForecastLoading}
+      error={aiForecastError}
+      onOpenForecast={onOpenForecast}
+      onRetry={() => setAiForecastReloadKey(key => key + 1)}
+    />}
     <div className="kpi-grid">
       <KpiCard icon={Database} label="Всего файлов" value={metric(imports.length)} unit="" note={metricNote('в журнале загрузок')} />
       <KpiCard icon={FileCheck2} label="Прошли проверку" value={metric(readyFiles)} unit="" note={metricNote('готовы к расчёту')} tone="blue" />
@@ -860,6 +1089,93 @@ function PlaceholderPage({ title, text, importsState }) {
     </div>
     <Card title={title} subtitle="Раздел откроется, когда появятся нужные данные">
       <EmptyState title="Пока недостаточно данных" text={text}/>
+    </Card>
+  </>
+}
+
+function ReconciliationPage({ importsState, onOpenQuality }) {
+  const { imports, loading } = importsState
+  const readyImports = imports.filter(item =>
+    item.accepted_rows > 0 && ['ready_to_publish', 'published'].includes(item.status)
+  )
+  const rowsByPeriod = readyImports.reduce((map, item) => {
+    const period = periodFromFilename(item.original_filename)
+    if (!period) return map
+    const current = map.get(period) || { period, technical: [], daily: [] }
+    if (item.dataset_kind === 'technical_balance') current.technical.push(item)
+    if (item.dataset_kind === 'daily_summary') current.daily.push(item)
+    map.set(period, current)
+    return map
+  }, new Map())
+  const rows = Array.from(rowsByPeriod.values()).sort((a, b) => b.period.localeCompare(a.period))
+  const readyRows = rows.filter(item => item.technical.length && item.daily.length)
+  const missingDailyRows = rows.filter(item => item.technical.length && !item.daily.length)
+  const missingTechnicalRows = rows.filter(item => !item.technical.length && item.daily.length)
+  const unknownPeriodFiles = readyImports.filter(item =>
+    ['technical_balance', 'daily_summary'].includes(item.dataset_kind) && !periodFromFilename(item.original_filename)
+  )
+  const readyText = readyRows.length
+    ? `Можно сверить ${readyRows.map(item => fmtMonthYear(item.period)).join(', ')}.`
+    : 'Для сверки нужен один месяц, где есть и техбаланс, и ежедневная сводка.'
+  const missingText = [
+    missingDailyRows.length ? `Ежедневная сводка: ${missingDailyRows.map(item => fmtMonthYear(item.period)).join(', ')}.` : '',
+    missingTechnicalRows.length ? `Техбаланс: ${missingTechnicalRows.map(item => fmtMonthYear(item.period)).join(', ')}.` : '',
+    unknownPeriodFiles.length ? `Не удалось определить месяц у ${fmt(unknownPeriodFiles.length)} файлов.` : '',
+  ].filter(Boolean).join(' ')
+
+  if (loading && !imports.length) {
+    return <div className="result-loading"><span/><b>Проверяем данные для месячной сверки…</b></div>
+  }
+
+  return <>
+    <div className="page-actions">
+      <div/>
+      <button className="export" type="button" onClick={onOpenQuality}><Upload/> Загрузить данные</button>
+    </div>
+    <div className="kpi-grid three">
+      <KpiCard icon={FileSpreadsheet} label="Техбалансы" value={fmt(readyImports.filter(item => item.dataset_kind === 'technical_balance').length)} unit="" note="готовые файлы" />
+      <KpiCard icon={CalendarDays} label="Ежедневные сводки" value={fmt(readyImports.filter(item => item.dataset_kind === 'daily_summary').length)} unit="" note="готовые файлы" tone="blue" />
+      <KpiCard icon={FileCheck2} label="Можно сверить" value={fmt(readyRows.length)} unit="" note="месяцев с парой файлов" tone={readyRows.length ? 'green' : 'yellow'} />
+    </div>
+    <Card
+      title={readyRows.length ? 'Месячная сверка готова' : 'Пока недостаточно данных'}
+      subtitle={readyRows.length ? readyText : 'Ниже показано, какого файла не хватает для каждого месяца'}
+      action={<Status value={readyRows.length ? 'В норме' : 'В работе'}/>}
+    >
+      <div className="reconciliation-detail">
+        <div className="reconciliation-requirement">
+          <Info/>
+          <div>
+            <b>Что нужно для расчёта</b>
+            <p>Для одного месяца нужна пара: технический баланс и ежедневная сводка за тот же месяц. Если месяц есть только в одном типе файла, расхождение посчитать нельзя.</p>
+            {missingText && <strong>{missingText}</strong>}
+          </div>
+        </div>
+        <div className="data-table reconciliation-detail-table">
+          <div className="tr th"><span>Месяц</span><span>Техбаланс</span><span>Ежедневная сводка</span><span>Что сделать</span><span>Статус</span></div>
+          {rows.length ? rows.map(item => {
+            const hasTechnical = item.technical.length > 0
+            const hasDaily = item.daily.length > 0
+            const action = hasTechnical && hasDaily
+              ? 'Данные сопоставимы'
+              : hasTechnical
+                ? `Загрузить ежедневную сводку за ${fmtMonthYear(item.period)}`
+                : `Загрузить техбаланс за ${fmtMonthYear(item.period)}`
+            return <div className="tr" key={item.period}>
+              <span className="file-name">{fmtMonthYear(item.period)}</span>
+              <span>{hasTechnical ? item.technical[0].original_filename : '—'}</span>
+              <span>{hasDaily ? item.daily[0].original_filename : '—'}</span>
+              <span>{action}</span>
+              <span><Status value={hasTechnical && hasDaily ? 'В норме' : 'В работе'}/></span>
+            </div>
+          }) : <div className="tr"><span>—</span><span>Нет готового техбаланса</span><span>Нет готовой ежедневной сводки</span><span>Загрузить оба файла за один месяц</span><span><Status value="В работе"/></span></div>}
+        </div>
+        {!!unknownPeriodFiles.length && <div className="reconciliation-unknown">
+          <b>Файлы без распознанного месяца</b>
+          <p>Переименуйте файл так, чтобы в названии были месяц и год, например: `Тех. баланс за март 2026.xls` или `Ежедневная сводка потребления — март 2026.xlsx`.</p>
+          {unknownPeriodFiles.slice(0, 4).map(item => <span key={item.id}>{item.original_filename}</span>)}
+        </div>}
+      </div>
     </Card>
   </>
 }
@@ -977,6 +1293,7 @@ function SourceDashboard({ kind, hasImports, onOpenQuality }) {
   const [result, setResult] = useState(null)
   const [loading, setLoading] = useState(hasImports)
   const [error, setError] = useState('')
+  const [tableSearchQuery, setTableSearchQuery] = useState('')
 
   useEffect(() => {
     if (!hasImports) {
@@ -1020,6 +1337,29 @@ function SourceDashboard({ kind, hasImports, onOpenQuality }) {
   const peakLabel = kpis.peak_day?.date || '—'
   const mlnValue = value => new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(Number(value || 0) / 1_000_000)
   const isTechnical = kind === 'technical'
+  const rankingSeries = isTechnical
+    ? (result.series || [])
+    : (result.series || []).map(item => ({
+      ...item,
+      object_name: item.name,
+      name: item.meter_number ? `№ ${item.meter_number}` : item.name,
+    }))
+  const normalizedTableSearchQuery = tableSearchQuery.trim().toLocaleLowerCase('ru-RU')
+  const tableRows = normalizedTableSearchQuery
+    ? (result.table || []).filter(item => [
+      item.name,
+      item.meter_number,
+      item.meter_type,
+      item.substation,
+      item.coefficient,
+      item.days,
+      item.value,
+      item.row,
+      item.meter_number_source,
+      item.consumption_source,
+    ].some(value => String(value || '').toLocaleLowerCase('ru-RU').includes(normalizedTableSearchQuery)))
+    : (result.table || [])
+  const hasTableSearch = Boolean(normalizedTableSearchQuery)
 
   return <>
     <section className="source-dashboard-hero">
@@ -1047,7 +1387,7 @@ function SourceDashboard({ kind, hasImports, onOpenQuality }) {
       <Card className="span-7 energy-chart-card" title={config.chartTitle} subtitle={config.chartSubtitle}>
         <div className="energy-chart source-ranking-chart">
           <Suspense fallback={<div className="result-chart-fallback">Строим рейтинг…</div>}>
-            <EnergyBusinessCharts kind="outgoing" data={(result.series || []).slice(0, 15)}/>
+            <EnergyBusinessCharts kind="outgoing" data={rankingSeries.slice(0, 15)}/>
           </Suspense>
         </div>
       </Card>
@@ -1065,16 +1405,32 @@ function SourceDashboard({ kind, hasImports, onOpenQuality }) {
           </div>)}
         </div>
       </Card>
-      <Card className="span-12" title={isTechnical ? 'Таблица объектов' : 'Таблица потребления'} subtitle="Номер прибора, подстанция и рассчитанный расход">
+      <Card
+        className="span-12"
+        title={isTechnical ? 'Таблица объектов' : 'Таблица потребления'}
+        subtitle={hasTableSearch
+          ? `Найдено ${fmt(tableRows.length)} из ${fmt(result.table?.length || 0)}`
+          : (isTechnical ? 'Номер прибора, подстанция и рассчитанный расход' : 'Номер прибора, источник колонок и рассчитанный расход')}
+        action={<label className="source-table-search" aria-label={isTechnical ? 'Поиск объектов' : 'Поиск потребления'}>
+          <Search/>
+          <input
+            type="search"
+            value={tableSearchQuery}
+            onChange={event => setTableSearchQuery(event.target.value)}
+            placeholder={isTechnical ? 'Поиск объектов' : 'Поиск'}
+          />
+        </label>}
+      >
         <div className="data-table source-dashboard-table">
-          <div className="tr th"><span>Наименование</span><span>№ ПУ</span><span>Подстанция</span><span>Расход</span><span>{isTechnical ? 'Коэффициент' : 'Дней'}</span></div>
-          {result.table.slice(0, 80).map(item => <div className="tr" key={item.id}>
+          <div className="tr th"><span>Наименование</span><span>№ ПУ</span><span>{isTechnical ? 'Подстанция' : 'Источник данных'}</span><span>Расход</span><span>{isTechnical ? 'Коэффициент' : 'Дней'}</span></div>
+          {tableRows.slice(0, 80).map(item => <div className="tr" key={item.id}>
             <span className="file-name">{item.name}</span>
-            <span>{item.meter_number || '—'}</span>
-            <span>{item.substation || 'Требует уточнения'}</span>
+            <span className="source-meter-cell"><b>{item.meter_number || '—'}</b>{!isTechnical && <small>{item.meter_number_source || 'Столбец C'}</small>}</span>
+            <span className={!isTechnical ? 'source-meter-cell' : ''}>{isTechnical ? (item.substation || '—') : <><b>{item.consumption_source || 'Расчёт: (G - F) × E'}</b><small>{item.substation || 'Подстанция не указана'}</small></>}</span>
             <span>{fmt(item.value)} кВт·ч</span>
             <span>{fmt(isTechnical ? item.coefficient : item.days)}</span>
           </div>)}
+          {!tableRows.length && <div className="tr"><span>—</span><span>{hasTableSearch ? 'Поиск не нашёл объектов' : 'Объекты не найдены'}</span><span>—</span><span>—</span><span>—</span></div>}
         </div>
       </Card>
     </div>
@@ -1164,7 +1520,18 @@ function EnergyBusinessDashboard({ hasImports, onOpenQuality }) {
     insight, warnings,
   } = result
   const mln = value => new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(Number(value || 0) / 1_000_000)
+  const energyAmount = value => {
+    const numeric = Math.abs(Number(value || 0))
+    if (numeric > 0 && numeric < 10_000) return `${fmt(value)} кВт·ч`
+    return `${mln(value)} млн кВт·ч`
+  }
+  const mlnOrDash = value => value === null || value === undefined ? '—' : mln(value)
   const percent = value => new Intl.NumberFormat('ru-RU', { style: 'percent', maximumFractionDigits: 1 }).format(Number(value || 0))
+  const percentWithFloor = value => {
+    const numeric = Number(value || 0)
+    if (numeric > 0 && numeric < .001) return '<0,1%'
+    return percent(numeric)
+  }
   const signedPercent = value => `${Number(value || 0) >= 0 ? '+' : '−'}${percent(Math.abs(Number(value || 0)))}`
   const dateLabel = value => value
     ? new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long' }).format(new Date(`${value}T00:00:00`))
@@ -1180,6 +1547,18 @@ function EnergyBusinessDashboard({ hasImports, onOpenQuality }) {
     ? `${fmt(dailySignals.events.length)} заметных изменений: ${dailySignals.events.filter(item => item.delta > 0).length} повышений и ${dailySignals.events.filter(item => item.delta < 0).length} спадов относительно предыдущего дня.`
     : 'Резких спадов и повышений относительно предыдущего дня не найдено.'
   const hasMonthlyChange = kpis.mom_change !== null && kpis.mom_change !== undefined
+  const hasReconciliationData = reconciliation.some(item => Number(item.days || 0) > 0)
+  const dailyPeriods = [...new Set(daily.map(item => String(item.period || '').trim()).filter(Boolean))].sort()
+  const monthlyPeriods = monthly.map(item => String(item.period || '').trim()).filter(Boolean)
+  const missingReconciliationPeriods = reconciliation
+    .filter(item => !Number(item.days || 0))
+    .map(item => item.label || fmtMonthYear(item.period) || item.period)
+  const reconciliationEmptyTitle = dailyPeriods.length
+    ? 'Сводка загружена за другие месяцы'
+    : 'Нет ежедневной сводки'
+  const reconciliationEmptyText = dailyPeriods.length
+    ? `Найдены суточные данные за ${dailyPeriods.map(fmtMonthYear).join(', ')}, а энергобаланс рассчитан за ${monthlyPeriods.map(fmtMonthYear).join(', ')}. Для сверки загрузите ежедневные сводки за ${missingReconciliationPeriods.join(', ')}.`
+    : 'Сверка появится после загрузки суточных данных за эти месяцы.'
 
   return <>
     <section className="energy-brief">
@@ -1316,7 +1695,7 @@ function EnergyBusinessDashboard({ hasImports, onOpenQuality }) {
           {externalSubstations.map((item, index) => <div key={item.name}>
             <span style={{ background: chartPalette[index % chartPalette.length] }}/>
             <small>{item.name}</small>
-            <b>{externalSubstationsTotal ? percent(Number(item.value || 0) / externalSubstationsTotal) : '—'}</b>
+            <b>{externalSubstationsTotal ? percentWithFloor(Number(item.value || 0) / externalSubstationsTotal) : '—'} <em>{energyAmount(item.value)}</em></b>
           </div>)}
         </div>
       </Card>
@@ -1342,17 +1721,18 @@ function EnergyBusinessDashboard({ hasImports, onOpenQuality }) {
         title="Сверка данных"
         subtitle="Ежедневные сводки и технический баланс"
       >
-        <div className="energy-reconciliation">
+        {hasReconciliationData ? <div className="energy-reconciliation">
           {reconciliation.map(item => {
-            const isAlert = Math.abs(Number(item.difference_pct || 0)) > .03
+            const hasDaily = Number(item.days || 0) > 0
+            const isAlert = hasDaily && item.difference_pct != null && Math.abs(Number(item.difference_pct || 0)) > .03
             return <div key={item.period}>
               <span className={`recon-month ${isAlert ? 'alert' : ''}`}>{item.label}</span>
-              <span><small>Сводка</small><b>{mln(item.daily_kwh)} млн</b></span>
+              <span><small>{hasDaily ? 'Сводка' : 'Сводка не загружена'}</small><b>{mlnOrDash(item.daily_kwh)}{hasDaily ? ' млн' : ''}</b></span>
               <span><small>Месяц</small><b>{mln(item.monthly_kwh)} млн</b></span>
-              <strong className={isAlert ? 'alert' : ''}>{signedPercent(item.difference_pct)}</strong>
+              <strong className={isAlert ? 'alert' : ''}>{hasDaily && item.difference_pct != null ? signedPercent(item.difference_pct) : '—'}</strong>
             </div>
           })}
-        </div>
+        </div> : <EmptyState title={reconciliationEmptyTitle} text={reconciliationEmptyText}/>}
         <button className="quality-link" onClick={onOpenQuality}><FileCheck2/> Проверить исходные файлы <ArrowRight/></button>
       </Card>
     </div>
@@ -1370,8 +1750,7 @@ function PeaksAndAnomaliesPage({ hasImports }) {
   const [result, setResult] = useState(null)
   const [loading, setLoading] = useState(hasImports)
   const [error, setError] = useState('')
-  const [availableFilters, setAvailableFilters] = useState({ periods: [] })
-  const [fallbackPeriods, setFallbackPeriods] = useState([])
+  const [calculablePeriods, setCalculablePeriods] = useState([])
   const [selectedPeriod, setSelectedPeriod] = useState('')
   const [selectedStation, setSelectedStation] = useState('')
 
@@ -1379,6 +1758,7 @@ function PeaksAndAnomaliesPage({ hasImports }) {
     if (!hasImports) {
       setResult(null)
       setLoading(false)
+      setCalculablePeriods([])
       return
     }
 
@@ -1398,12 +1778,13 @@ function PeaksAndAnomaliesPage({ hasImports }) {
         const data = await parseJsonResponse(response)
         if (active) {
           setResult(data)
-          setFallbackPeriods(current => Array.from(new Set([
-            ...current,
-            ...(data.monthly_series || [])
-              .map(item => String(item.period || ''))
-              .filter(period => /^\d{4}-\d{2}$/.test(period)),
-          ])))
+          const dailyPeriods = (data.daily_series || [])
+            .filter(item => Number(item.value || 0) > 0)
+            .map(item => String(item.period || item.date?.slice(0, 7) || ''))
+            .filter(period => /^\d{4}-\d{2}$/.test(period))
+          setCalculablePeriods(current => Array.from(new Set(selectedPeriod
+            ? [...current, ...dailyPeriods]
+            : dailyPeriods)).sort())
         }
       } catch (err) {
         if (active) setError(err.message || 'Ошибка загрузки')
@@ -1418,29 +1799,15 @@ function PeaksAndAnomaliesPage({ hasImports }) {
   }, [hasImports, selectedPeriod])
 
   useEffect(() => {
-    if (!hasImports) return
-
-    let active = true
-    ;(async () => {
-      try {
-        const response = await apiFetch('/api/v1/filters')
-        if (!response.ok) throw new Error(`HTTP ${response.status}`)
-        const data = await parseJsonResponse(response)
-        if (active) setAvailableFilters(data)
-      } catch {
-        if (active) setAvailableFilters({ periods: [] })
-      }
-    })()
-
-    return () => {
-      active = false
+    if (selectedPeriod && calculablePeriods.length && !calculablePeriods.includes(selectedPeriod)) {
+      setSelectedPeriod('')
     }
-  }, [hasImports])
+  }, [calculablePeriods, selectedPeriod])
 
   const dateLabel = value => value
     ? new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long' }).format(new Date(`${value}T00:00:00`))
     : '—'
-  const periodOptions = Array.from(new Set([...(availableFilters.periods || []), ...fallbackPeriods]))
+  const periodOptions = Array.from(new Set(calculablePeriods))
     .sort()
     .slice(-12)
     .reverse()
@@ -1585,18 +1952,35 @@ function PeaksAndAnomaliesPage({ hasImports }) {
 
 function ConsumersPage({ hasImports, consumersState, mappings, setMappings }) {
   const { consumers, loading, error, reload } = consumersState
-  const mappedCount = consumers.filter(item => mappings[item.id]).length
+  const [searchQuery, setSearchQuery] = useState('')
+  const mappedCount = consumers.filter(item => mappingForConsumer(mappings, item)).length
   const totalValue = consumers.reduce((sum, item) => sum + Number(item.value || 0), 0)
   const progress = consumers.length ? mappedCount / consumers.length : 0
   const percent = value => new Intl.NumberFormat('ru-RU', { style: 'percent', maximumFractionDigits: 1 }).format(Number(value || 0))
+  const normalizedSearchQuery = searchQuery.trim().toLocaleLowerCase('ru-RU')
+  const filteredConsumers = normalizedSearchQuery
+    ? consumers.filter(item => {
+      const regionId = mappingForConsumer(mappings, item)
+      const region = WEATHER_REGIONS.find(candidate => candidate.id === regionId)
+      return [
+        item.name,
+        item.company,
+        item.substation,
+        item.group,
+        region?.name,
+      ].some(value => String(value || '').toLocaleLowerCase('ru-RU').includes(normalizedSearchQuery))
+    })
+    : consumers
+  const hasConsumerSearch = Boolean(normalizedSearchQuery)
   useEffect(() => {
     if (!consumers.length) return
     setMappings(current => {
       let changed = false
       const next = { ...current }
       consumers.forEach(item => {
-        if (next[item.id]) return
+        if (mappingForConsumer(next, item)) return
         next[item.id] = 'aktobe'
+        next[consumerKey(item.name)] = 'aktobe'
         changed = true
       })
       return changed ? next : current
@@ -1605,21 +1989,31 @@ function ConsumersPage({ hasImports, consumersState, mappings, setMappings }) {
   const setRegion = (consumerId, regionId) => {
     setMappings(current => {
       const next = { ...current }
-      if (regionId) next[consumerId] = regionId
-      else delete next[consumerId]
+      const consumer = consumers.find(item => item.id === consumerId)
+      if (regionId) {
+        next[consumerId] = regionId
+        if (consumer) next[consumerKey(consumer.name)] = regionId
+      } else {
+        delete next[consumerId]
+        if (consumer) delete next[consumerKey(consumer.name)]
+      }
       return next
     })
   }
   const fillAktobe = () => {
     setMappings(current => consumers.reduce((next, item) => {
       next[item.id] = next[item.id] || 'aktobe'
+      next[consumerKey(item.name)] = next[consumerKey(item.name)] || next[item.id] || 'aktobe'
       return next
     }, { ...current }))
   }
   const clearMappings = () => {
     setMappings(current => {
       const next = { ...current }
-      consumers.forEach(item => { next[item.id] = 'aktobe' })
+      consumers.forEach(item => {
+        next[item.id] = 'aktobe'
+        next[consumerKey(item.name)] = 'aktobe'
+      })
       return next
     })
   }
@@ -1659,16 +2053,30 @@ function ConsumersPage({ hasImports, consumersState, mappings, setMappings }) {
       <KpiCard icon={MapPin} label="Регионы назначены" value={Math.round(progress * 100)} unit="%" note={progress === 1 ? 'прогноз готов к расчёту' : 'назначьте регион каждому'} tone={progress === 1 ? 'green' : 'yellow'} />
       <KpiCard icon={Zap} label="Нагрузка точек учёта" value={fmt(totalValue)} unit="кВт·ч" note="сумма доступных показаний" tone="blue" />
     </div>
-    <Card title="Погодные регионы потребителей" subtitle="Для новых потребителей по умолчанию используется Актюбинская область">
+    <Card
+      title="Погодные регионы потребителей"
+      subtitle={hasConsumerSearch
+        ? `Найдено ${fmt(filteredConsumers.length)} из ${fmt(consumers.length)}`
+        : 'Для новых потребителей по умолчанию используется Актюбинская область'}
+      action={<label className="consumer-search" aria-label="Поиск потребителей">
+        <Search/>
+        <input
+          type="search"
+          value={searchQuery}
+          onChange={event => setSearchQuery(event.target.value)}
+          placeholder="Поиск"
+        />
+      </label>}
+    >
       <div className="data-table consumers-table">
         <div className="tr th"><span>Потребитель</span><span>Компания</span><span>Подстанция</span><span>Потребление</span><span>Доля</span><span>Погодный регион</span><span>Состояние</span></div>
-        {consumers.length ? consumers.map(item => {
-          const regionId = mappings[item.id] || ''
+        {filteredConsumers.length ? filteredConsumers.map(item => {
+          const regionId = mappingForConsumer(mappings, item)
           const region = WEATHER_REGIONS.find(candidate => candidate.id === regionId)
           return <div className="tr" key={item.id}>
             <span className="file-name">{item.name}</span>
-            <span>{item.company || 'Требует уточнения'}</span>
-            <span>{item.substation || item.group || 'Требует уточнения'}</span>
+            <span>{item.company || '—'}</span>
+            <span>{item.substation || item.group || '—'}</span>
             <span>{fmt(item.value)} кВт·ч</span>
             <span>{totalValue ? percent(Number(item.value || 0) / totalValue) : '—'}</span>
             <span>
@@ -1679,7 +2087,7 @@ function ConsumersPage({ hasImports, consumersState, mappings, setMappings }) {
             </span>
             <span><Status value={region ? 'В норме' : 'В работе'}/></span>
           </div>
-        }) : <div className="tr"><span>—</span><span>В отчёте не найдены потребители или объекты нагрузки</span><span>—</span><span>—</span><span>—</span><span>—</span><span><Status value="В работе"/></span></div>}
+        }) : <div className="tr"><span>—</span><span>{hasConsumerSearch ? 'Поиск не нашёл потребителей' : 'В отчёте не найдены потребители или объекты нагрузки'}</span><span>—</span><span>—</span><span>—</span><span>—</span><span><Status value="В работе"/></span></div>}
       </div>
     </Card>
   </>
@@ -1706,7 +2114,7 @@ function ForecastChartLegend() {
   </div>
 }
 
-function ForecastPage({ hasImports, consumersState, mappings, forecastReady, onOpenConsumers }) {
+function ForecastPage({ hasImports, consumersState, mappings, forecastReady, onOpenConsumers, onOpenUpload }) {
   const [result, setResult] = useState(null)
   const [selectedConsumerIds, setSelectedConsumerIds] = useState([])
   const [fullscreenChart, setFullscreenChart] = useState(false)
@@ -1725,16 +2133,17 @@ function ForecastPage({ hasImports, consumersState, mappings, forecastReady, onO
     start_date: '',
     end_date: '',
   })
+  const [tariffKzt, setTariffKzt] = useState(() => localStorage.getItem('energy-forecast-tariff-kzt') || '')
   const [loading, setLoading] = useState(hasImports)
   const [error, setError] = useState('')
   const consumers = consumersState.consumers || []
-  const unmappedConsumers = consumers.filter(item => !mappings[item.id])
+  const unmappedConsumers = consumers.filter(item => !mappingForConsumer(mappings, item))
   const selectedConsumers = selectedConsumerIds.length
     ? consumers.filter(item => selectedConsumerIds.includes(item.id))
     : consumers
   const weatherLocations = Array.from(selectedConsumers
     .reduce((byRegion, item) => {
-      const region = WEATHER_REGIONS.find(candidate => candidate.id === mappings[item.id])
+      const region = WEATHER_REGIONS.find(candidate => candidate.id === mappingForConsumer(mappings, item))
       if (!region) return byRegion
       const current = byRegion.get(region.id) || {
         id: region.id,
@@ -1762,6 +2171,10 @@ function ForecastPage({ hasImports, consumersState, mappings, forecastReady, onO
   useEffect(() => {
     localStorage.setItem('energy-forecast-adjustments', JSON.stringify(adjustments))
   }, [adjustments])
+
+  useEffect(() => {
+    localStorage.setItem('energy-forecast-tariff-kzt', tariffKzt)
+  }, [tariffKzt])
 
   useEffect(() => {
     if (!hasImports || !forecastReady) {
@@ -1853,6 +2266,22 @@ function ForecastPage({ hasImports, consumersState, mappings, forecastReady, onO
   const mln = value => new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(Number(value || 0) / 1_000_000)
   const percent = value => new Intl.NumberFormat('ru-RU', { style: 'percent', maximumFractionDigits: 1 }).format(Number(value || 0))
   const signedPercent = value => `${Number(value || 0) >= 0 ? '+' : '−'}${percent(Math.abs(Number(value || 0)))}`
+  const money = value => new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 }).format(Number(value || 0))
+  const dateLabel = value => value
+    ? new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short' }).format(new Date(`${value}T00:00:00`))
+    : '—'
+  const dateKeyInTimezone = (timeZone = 'Asia/Aqtobe') => {
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(new Date()).reduce((map, item) => {
+      map[item.type] = item.value
+      return map
+    }, {})
+    return `${parts.year}-${parts.month}-${parts.day}`
+  }
   const selectedConsumerValue = selectedConsumerIds.length
     ? selectedConsumers.reduce((sum, item) => sum + Number(item.value || 0), 0)
     : 0
@@ -1890,6 +2319,7 @@ function ForecastPage({ hasImports, consumersState, mappings, forecastReady, onO
   const backtestAccuracy = forecast.backtest?.accuracy
   const weatherReady = forecast.weather?.status === 'ready'
   const combinedSeries = forecast.combined_series || forecast.series || []
+  const hasDailyProfile = Number(forecast.source_days || 0) > 0 && combinedSeries.some(item => item.phase === 'actual')
   const totalWeatherAnomalies = Number(forecast.weather?.history_anomaly_days || 0) + Number(forecast.weather?.anomaly_days || 0)
   const signedEnergy = value => `${Number(value || 0) >= 0 ? '+' : '−'}${mln(Math.abs(Number(value || 0)))}`
   const selectedConsumerLabel = selectedConsumerIds.length
@@ -1939,6 +2369,52 @@ function ForecastPage({ hasImports, consumersState, mappings, forecastReady, onO
   }
 
   const forecastDeltaPositive = Number(forecast.expected_change_pct || 0) >= 0
+  const tariff = Number(String(tariffKzt || '').replace(',', '.'))
+  const hasTariff = Number.isFinite(tariff) && tariff > 0
+  const forecastCost = forecast.forecast_total_kwh * (hasTariff ? tariff : 0)
+  const sourceCost = forecast.source_total_kwh * (hasTariff ? tariff : 0)
+  const costDelta = forecastCost - sourceCost
+  const forecastTimezone = weatherLocations[0]?.timezone || 'Asia/Aqtobe'
+  const todayIso = dateKeyInTimezone(forecastTimezone)
+  const forecastStartIso = forecast.period ? `${forecast.period}-01` : ''
+  const planDays = forecast.period
+    ? new Date(Date.UTC(Number(forecast.period.slice(0, 4)), Number(forecast.period.slice(5, 7)), 0)).getUTCDate()
+    : 30
+  const forecastEndIso = forecast.period ? `${forecast.period}-${String(planDays).padStart(2, '0')}` : ''
+  const todayInForecastMonth = Boolean(forecast.period && todayIso >= forecastStartIso && todayIso <= forecastEndIso)
+  const forecastIsFuture = Boolean(forecast.period && todayIso < forecastStartIso)
+  const forecastIsPast = Boolean(forecast.period && todayIso > forecastEndIso)
+  const elapsedDays = forecastIsFuture
+    ? 0
+    : forecastIsPast
+      ? planDays
+      : todayInForecastMonth
+        ? Number(todayIso.slice(8, 10))
+        : 0
+  const remainingDays = Math.max(0, planDays - elapsedDays)
+  const elapsedShare = planDays ? elapsedDays / planDays : 0
+  const todayPlanValue = forecast.forecast_total_kwh * elapsedShare
+  const todayPlanLow = forecast.forecast_low_kwh * elapsedShare
+  const todayPlanHigh = forecast.forecast_high_kwh * elapsedShare
+  const todayPlanLabel = todayInForecastMonth
+    ? `Сегодня · ${dateLabel(todayIso)}`
+    : forecastIsFuture
+      ? `До начала · ${dateLabel(forecastStartIso)}`
+      : forecastIsPast
+        ? `Месяц завершён · ${dateLabel(forecastEndIso)}`
+        : 'Сегодня'
+  const planCheckpoints = [25, 50, 75, 100].map(share => {
+    const [year, month] = String(forecast.period || '').split('-').map(Number)
+    const day = Math.max(1, Math.min(planDays, Math.round(planDays * share / 100)))
+    const isoDate = year && month ? `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}` : ''
+    return {
+      share,
+      label: isoDate ? dateLabel(isoDate) : `${share}% месяца`,
+      value: forecast.forecast_total_kwh * share / 100,
+      low: forecast.forecast_low_kwh * share / 100,
+      high: forecast.forecast_high_kwh * share / 100,
+    }
+  })
 
   return <div className="forecast-page">
     <section className="forecast-command">
@@ -1984,7 +2460,7 @@ function ForecastPage({ hasImports, consumersState, mappings, forecastReady, onO
       <div className="forecast-scope-chips">
         {consumers.map(item => {
           const active = selectedConsumerIds.includes(item.id)
-          const region = WEATHER_REGIONS.find(candidate => candidate.id === mappings[item.id])
+          const region = WEATHER_REGIONS.find(candidate => candidate.id === mappingForConsumer(mappings, item))
           return <button type="button" key={item.id} className={active ? 'active' : ''} onClick={() => toggleConsumer(item.id)} title={`${region?.name || 'Регион не указан'} · ${fmt(item.value)} кВт·ч`}>
             <span>{item.name}</span>
             {active && <Check/>}
@@ -1998,7 +2474,7 @@ function ForecastPage({ hasImports, consumersState, mappings, forecastReady, onO
       <article>
         <span className="forecast-signal-icon weather"><Thermometer/></span>
         <div><small>ПОГОДА</small><b>{signedEnergy(forecast.weather_effect_kwh)} <em>млн кВт·ч</em></b></div>
-        <p>{weatherReady ? `${totalWeatherAnomalies} дней с аномальной погодой` : 'без погодной поправки'}</p>
+        <p>{hasDailyProfile && weatherReady ? `${totalWeatherAnomalies} дней с аномальной погодой` : 'нет дневного профиля'}</p>
       </article>
       <article>
         <span className="forecast-signal-icon event"><Factory/></span>
@@ -2013,7 +2489,7 @@ function ForecastPage({ hasImports, consumersState, mappings, forecastReady, onO
     </section>
 
     <div className="forecast-workspace">
-      <Card
+      {hasDailyProfile ? <Card
         className="energy-chart-card combined-forecast-card forecast-main-chart"
         title={`${sourcePeriodLabel} — факт · ${forecastPeriodLabel} — прогноз`}
         subtitle="Потребление и температура по дням"
@@ -2034,7 +2510,64 @@ function ForecastPage({ hasImports, consumersState, mappings, forecastReady, onO
           <div><small>ОЖИДАЕМЫЙ ДИАПАЗОН</small><b>{mln(forecast.forecast_low_kwh)}–{mln(forecast.forecast_high_kwh)} млн кВт·ч</b></div>
           <p>Прогноз согласован с техбалансом. Красным отмечены дни с аномальной погодой; наведите на дату, чтобы увидеть вклад факторов.</p>
         </div>
-      </Card>
+      </Card> : <Card
+        className="monthly-plan-card forecast-main-chart"
+        title={`${forecastPeriodLabel} · месячный план`}
+        subtitle="Дневная линия скрыта, пока нет ежедневной сводки"
+        action={<button className="forecast-export" type="button" onClick={onOpenUpload}><Upload/> Загрузить сводку</button>}
+      >
+        <section className="monthly-plan-hero">
+          <div>
+            <small>БАЗОВЫЙ ПЛАН</small>
+            <b>{mln(forecast.forecast_total_kwh)} <em>млн кВт·ч</em></b>
+            <p>Это прогноз месячного объёма, а не дневная форма нагрузки. Дневной контроль включится после загрузки ежедневной сводки.</p>
+          </div>
+          <div className="monthly-plan-range" aria-label="Прогнозный коридор">
+            <span>Нижняя граница <b>{mln(forecast.forecast_low_kwh)}</b></span>
+            <i><em style={{ left: '18%', width: '64%' }}><strong style={{ left: '50%' }}/></em></i>
+            <span>Верхняя граница <b>{mln(forecast.forecast_high_kwh)}</b></span>
+          </div>
+        </section>
+        <div className="monthly-plan-grid">
+          <article className="monthly-plan-today">
+            <small>{todayPlanLabel}</small>
+            <b>{mln(todayPlanValue)} <em>млн кВт·ч</em></b>
+            <p>{todayInForecastMonth
+              ? `Плановая накопленная траектория на ${elapsedDays}-й день месяца. Осталось ${remainingDays} дней.`
+              : forecastIsFuture
+                ? `Прогнозный месяц ещё не начался. План стартует ${dateLabel(forecastStartIso)}.`
+                : `Прогнозный месяц уже завершён. Для план-факт сравнения нужна ежедневная сводка.`}</p>
+            <i aria-hidden="true"><em style={{ width: `${Math.round(elapsedShare * 100)}%` }}/></i>
+            <span>коридор {mln(todayPlanLow)}–{mln(todayPlanHigh)} млн кВт·ч</span>
+          </article>
+          <article className="monthly-plan-tariff">
+            <div>
+              <small>ЗАТРАТЫ</small>
+              <b>{hasTariff ? `${money(forecastCost)} ₸` : 'Нужен тариф'}</b>
+              <p>{hasTariff
+                ? `${costDelta >= 0 ? '+' : '−'}${money(Math.abs(costDelta))} ₸ к ${sourcePeriodLabel}`
+                : `Энергетическая экспозиция: ${signedEnergy(forecast.forecast_total_kwh - forecast.source_total_kwh)} млн кВт·ч к ${sourcePeriodLabel}`}</p>
+            </div>
+            <label>
+              <span>Тариф, ₸/кВт·ч</span>
+              <input inputMode="decimal" value={tariffKzt} onChange={event => setTariffKzt(event.target.value)} placeholder="например 28.5"/>
+            </label>
+          </article>
+          <article className="monthly-plan-action">
+            <small>КАК ИСПОЛЬЗОВАТЬ</small>
+            <b>План-факт трекер</b>
+            <p>После загрузки ежедневной сводки система сравнит накопленный факт с этим коридором и покажет, идём выше, ниже или в пределах плана.</p>
+            <button type="button" onClick={onOpenUpload}><Upload/> Загрузить ежедневную сводку</button>
+          </article>
+        </div>
+        <div className="monthly-plan-checkpoints">
+          {planCheckpoints.map(item => <div key={item.share}>
+            <span><b>{item.share}%</b><small>{item.label}</small></span>
+            <strong>{mln(item.value)} млн</strong>
+            <p>коридор {mln(item.low)}–{mln(item.high)} млн кВт·ч</p>
+          </div>)}
+        </div>
+      </Card>}
 
       <Card className="forecast-scenario-rail" title="Сценарии" subtitle="Возможный итог при разных условиях">
         <div className="forecast-scenarios">
@@ -2074,7 +2607,7 @@ function ForecastPage({ hasImports, consumersState, mappings, forecastReady, onO
       </Card>
     </section>
 
-    {fullscreenChart && <div className="chart-fullscreen" role="dialog" aria-modal="true" aria-label="Прогноз нагрузки" onClick={() => setFullscreenChart(false)}>
+    {hasDailyProfile && fullscreenChart && <div className="chart-fullscreen" role="dialog" aria-modal="true" aria-label="Прогноз нагрузки" onClick={() => setFullscreenChart(false)}>
       <section onClick={event => event.stopPropagation()}>
         <header>
           <div>
@@ -2588,7 +3121,7 @@ function Quality({
         const aiSettingsResponse = await apiFetch('/api/v1/ai/settings')
         const aiSettings = aiSettingsResponse.ok ? await parseJsonResponse(aiSettingsResponse) : null
         if (!aiSettings?.has_api_key) {
-          setAiNotice('Показатели и прогноз уже обновлены. Подключите OpenAI, если нужен дополнительный разбор.')
+          setAiNotice('Показатели и прогноз уже обновлены. Подключите ЭнергоПульс AI, если нужен дополнительный разбор.')
         } else {
           setUploadProgress(current => ({ ...current, phase: 'ai', completed: files.length }))
           const insightResponse = await apiFetch(`/api/v1/imports/${lastBatch.id}/ai-insight`, {
@@ -2597,7 +3130,7 @@ function Quality({
           if (!insightResponse.ok) {
             const message = await readApiError(insightResponse)
             if (insightResponse.status === 409) {
-              setAiNotice('Файл готов к работе. OpenAI можно подключить позже в одноимённом разделе.')
+              setAiNotice('Файл готов к работе. ЭнергоПульс AI можно подключить позже в одноимённом разделе.')
             } else {
               setAiNotice(`Файл обработан, но AI-разбор не готов: ${message}`)
             }
@@ -2805,11 +3338,11 @@ function OnboardingJourney({ open, onClose, onOpenUpload, onOpenIntegrations }) 
       <div className="onboarding-proof">
         <div><Check/><span><b>Расчёты без AI</b><small>Проверка файлов, энергобаланс и прогноз</small></span></div>
         <div><BrainCircuit/><span><b>Контекст AI</b><small>Загрузки, качество данных, энергобаланс и прогноз</small></span></div>
-        <div><Lock/><span><b>Параметры OpenAI</b><small>API-ключ, модель и системная инструкция</small></span></div>
+        <div><Lock/><span><b>Параметры ЭнергоПульс AI</b><small>API-ключ, модель и системная инструкция</small></span></div>
       </div>
       <footer>
         <button className="onboarding-skip" type="button" onClick={onClose}>Открыть сводку</button>
-        <button className="onboarding-integrate" type="button" onClick={onOpenIntegrations}><Settings2/> Подключить OpenAI</button>
+        <button className="onboarding-integrate" type="button" onClick={onOpenIntegrations}><Settings2/> Подключить ЭнергоПульс AI</button>
         <button className="onboarding-start" type="button" onClick={onOpenUpload}><Upload/> Загрузить файлы <ArrowRight/></button>
       </footer>
     </section>
@@ -2872,7 +3405,7 @@ function AISettingsPage({ onOpenChat, onRestartOnboarding }) {
   }
 
   const clearKey = async () => {
-    if (!settingsState || !window.confirm('Удалить сохранённый API-ключ OpenAI?')) return
+    if (!settingsState || !window.confirm('Удалить сохранённый API-ключ ЭнергоПульс AI?')) return
     setSaving(true)
     try {
       const response = await apiFetch('/api/v1/ai/settings', {
@@ -2907,18 +3440,18 @@ function AISettingsPage({ onOpenChat, onRestartOnboarding }) {
     <section className="ai-settings-hero">
       <div>
         <span><BrainCircuit/></span>
-        <div><small>OPENAI</small><h2>Настройки подключения</h2><p>Ключ, модель и системная инструкция.</p></div>
+        <div><small>ЭНЕРГОПУЛЬС AI</small><h2>Настройки подключения</h2><p>Ключ, модель и системная инструкция.</p></div>
       </div>
       <div className={`ai-key-state ${settingsState.has_api_key ? 'ready' : 'missing'}`}>
-        <i/><span><small>ПОДКЛЮЧЕНИЕ</small><b>{settingsState.has_api_key ? 'AI подключён' : 'OpenAI не подключён'}</b></span>
+        <i/><span><small>ПОДКЛЮЧЕНИЕ</small><b>{settingsState.has_api_key ? 'AI подключён' : 'ЭнергоПульс AI не подключён'}</b></span>
       </div>
     </section>
     <button className="onboarding-restart" type="button" onClick={onRestartOnboarding}><Zap/> Показать быстрый старт</button>
 
     <form className="ai-settings-grid" onSubmit={saveSettings}>
-      <Card className="ai-settings-card" title="Подключение OpenAI" subtitle="Ключ хранится на сервере и не передаётся обратно в браузер">
+      <Card className="ai-settings-card" title="Подключение ЭнергоПульс AI" subtitle="Ключ хранится на сервере и не передаётся обратно в браузер">
         <label className="ai-field">
-          <span>API-ключ OpenAI</span>
+          <span>API-ключ ЭнергоПульс AI</span>
           <div className="ai-secret-input">
             <KeyRound/>
             <input
@@ -3107,7 +3640,7 @@ function AIChat({ forcedOpen, onOpenChange, onOpenSettings }) {
       </div>)}
       {loading && <div className="assistant ai-thinking"><Bot/><div className="chat-message"><i/><i/><i/></div></div>}
       {error && <div className="ai-chat-error"><AlertTriangle/><p>{error}</p></div>}
-      {!settingsState?.has_api_key && !booting && <div className="ai-chat-key-warning"><KeyRound/><span><b>Подключите OpenAI</b><small>Файлы и аналитика уже работают. Ключ нужен только для AI-разбора и чата.</small></span><button onClick={onOpenSettings}>Подключить</button></div>}
+      {!settingsState?.has_api_key && !booting && <div className="ai-chat-key-warning"><KeyRound/><span><b>Подключите ЭнергоПульс AI</b><small>Файлы и аналитика уже работают. Ключ нужен только для AI-разбора и чата.</small></span><button onClick={onOpenSettings}>Подключить</button></div>}
     </div>
     <div className="q-suggestions">
       {suggestions.map(item => <button key={item} onClick={event => sendMessage(event, item)} disabled={loading || !settingsState?.has_api_key}>{item}</button>)}
@@ -3187,7 +3720,7 @@ function AppShell({ dark, setDark }) {
   ])
   const consumersState = useConsumersState(hasConsumerData)
   const [consumerMappings, setConsumerMappings] = useConsumerMappings()
-  const forecastReady = hasConsumerData && consumersState.consumers.length > 0 && consumersState.consumers.every(item => consumerMappings[item.id])
+  const forecastReady = hasConsumerData && consumersState.consumers.length > 0 && consumersState.consumers.every(item => mappingForConsumer(consumerMappings, item))
   const backendState = importsState.loading ? 'pending' : importsState.error ? 'offline' : 'live'
 
   useEffect(() => {
@@ -3278,6 +3811,7 @@ function AppShell({ dark, setDark }) {
       onOpenQuality={()=>setPage('quality')}
       onOpenResult={openResult}
       onOpenDaily={()=>setPage('peaks')}
+      onOpenForecast={()=>setPage('forecast')}
       importsState={importsState}
     />,
     consumption: maybeBlockAnalytics('consumption', <EnergyBusinessDashboard hasImports={hasImports} onOpenQuality={()=>setPage('quality')}/>),
@@ -3285,8 +3819,8 @@ function AppShell({ dark, setDark }) {
     dailyConsumption: maybeBlockAnalytics('dailyConsumption', <SourceDashboard kind="daily" hasImports={hasDailyData} onOpenQuality={()=>setPage('quality')}/>),
     peaks: maybeBlockAnalytics('peaks', <PeaksAndAnomaliesPage hasImports={hasDailyData}/>),
     consumers: maybeBlockAnalytics('consumers', <ConsumersPage hasImports={hasConsumerData} consumersState={consumersState} mappings={consumerMappings} setMappings={setConsumerMappings}/>),
-    forecast: maybeBlockAnalytics('forecast', <ForecastPage hasImports={hasConsumerData} consumersState={consumersState} mappings={consumerMappings} forecastReady={forecastReady} onOpenConsumers={()=>setPage('consumers')}/>),
-    reconciliation: maybeBlockAnalytics('reconciliation', <PlaceholderPage title="Месячная сверка" text="Загрузите сопоставимые ежедневные сводки и техбалансы — здесь появятся расхождения по месяцам." importsState={importsState}/>),
+    forecast: maybeBlockAnalytics('forecast', <ForecastPage hasImports={hasConsumerData} consumersState={consumersState} mappings={consumerMappings} forecastReady={forecastReady} onOpenConsumers={()=>setPage('consumers')} onOpenUpload={openUploadPicker}/>),
+    reconciliation: maybeBlockAnalytics('reconciliation', <ReconciliationPage importsState={importsState} onOpenQuality={()=>setPage('quality')}/>),
     quality: <Quality
       importsState={importsState}
       onUploadComplete={() => setPage('consumption')}

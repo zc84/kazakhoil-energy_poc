@@ -85,6 +85,9 @@ def sanitize_user_facing_ai_text(text: str) -> str:
             "подтверждён данными помесячного энергобаланса"
         ),
         "daily/monthly": "суточных и месячных данных",
+        "reported итогу": "итогу из исходного файла",
+        "reported итог": "итог из исходного файла",
+        "backtest MAPE": "проверка на прошлых месяцах показывает среднюю ошибку",
     }
     for internal_phrase, user_facing_phrase in phrase_replacements.items():
         cleaned = cleaned.replace(internal_phrase, user_facing_phrase)
@@ -147,6 +150,15 @@ class InsightConfidence(BaseModel):
     basis: str
 
 
+class OverviewForecastSection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+    value: str
+    detail: str
+    tone: Literal["positive", "neutral", "warning", "critical"]
+
+
 class EnergyInsightBrief(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -156,6 +168,17 @@ class EnergyInsightBrief(BaseModel):
     signals: list[InsightSignal] = Field(min_length=3, max_length=3)
     action: InsightAction
     confidence: InsightConfidence
+
+
+class OverviewForecastBrief(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["ready", "watch", "limited"]
+    headline: str
+    sections: list[OverviewForecastSection] = Field(min_length=2, max_length=4)
+    actions: list[InsightAction] = Field(min_length=1, max_length=2)
+    confidence: InsightConfidence
+    caveat: str
 
 
 def get_or_create_ai_settings(db: Session) -> AISettings:

@@ -43,7 +43,13 @@ def upgrade() -> None:
         ),
         sa.Column(
             "dataset_kind",
-            sa.Enum("unknown", "daily_summary", "technical_balance", name="datasetkind"),
+            sa.Enum(
+                "unknown",
+                "daily_summary",
+                "technical_balance",
+                "commercial_consumption",
+                name="datasetkind",
+            ),
             nullable=False,
         ),
         sa.Column("parser_version", sa.String(length=32), nullable=False),
@@ -116,7 +122,13 @@ def downgrade() -> None:
     op.drop_table("import_batches")
 
     sa.Enum("info", "warning", "error", name="validationseverity").drop(op.get_bind(), checkfirst=True)
-    sa.Enum("unknown", "daily_summary", "technical_balance", name="datasetkind").drop(op.get_bind(), checkfirst=True)
+    sa.Enum(
+        "unknown",
+        "daily_summary",
+        "technical_balance",
+        "commercial_consumption",
+        name="datasetkind",
+    ).drop(op.get_bind(), checkfirst=True)
     sa.Enum(
         "uploaded",
         "parsing",

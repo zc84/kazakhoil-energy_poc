@@ -30,6 +30,7 @@ class DatasetKind(StrEnum):
     unknown = "unknown"
     daily_summary = "daily_summary"
     technical_balance = "technical_balance"
+    commercial_consumption = "commercial_consumption"
 
 
 class TimestampMixin:

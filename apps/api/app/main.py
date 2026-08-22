@@ -1,10 +1,12 @@
-from datetime import date, datetime, timezone
+from calendar import monthrange
+from datetime import date, datetime, timedelta, timezone
 import csv
 import io
 import json
 from pathlib import Path
 import re
 import shutil
+from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, File, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -44,6 +46,7 @@ from .services.ai import (
     AI_MODELS,
     AI_MODEL_IDS,
     EnergyInsightBrief,
+    OverviewForecastBrief,
     ask_energy_ai,
     build_ai_context,
     effective_api_key,
@@ -62,6 +65,7 @@ from .services.dashboard import (
 )
 from .services.ingestion import parse_file
 from .services.storage import checksum_payload, read_upload_payload, save_payload
+from .services.weather import load_weather_context
 
 settings = get_settings()
 cors_origins = [origin.strip() for origin in settings.cors_allow_origins.split(",") if origin.strip()]
@@ -527,6 +531,204 @@ def read_ai_context(db: Session = Depends(get_db)) -> dict[str, object]:
 )
 def latest_ai_insight(db: Session = Depends(get_db)) -> AIInsight | None:
     return db.scalar(select(AIInsight).order_by(AIInsight.created_at.desc()))
+
+
+def _average(values: list[float]) -> float | None:
+    return sum(values) / len(values) if values else None
+
+
+def _overview_weather_summary(
+    *,
+    target_start: date,
+    target_end: date,
+    today: date,
+) -> dict[str, object]:
+    settings = get_settings()
+    history_end = min(today - timedelta(days=1), target_start - timedelta(days=1))
+    history_start = date(max(1940, history_end.year - 2), 1, 1)
+    context = load_weather_context(
+        history_start,
+        history_end,
+        target_start,
+        target_end,
+        latitude=settings.forecast_latitude,
+        longitude=settings.forecast_longitude,
+        timezone=settings.forecast_timezone,
+        location_name=settings.forecast_location_name,
+    )
+    forecast_rows = [
+        {"date": day, **values}
+        for day, values in sorted((context.get("forecast") or {}).items())
+        if target_start.isoformat() <= day <= target_end.isoformat()
+    ]
+    temperatures = [
+        float(row["temperature_2m_mean"])
+        for row in forecast_rows
+        if row.get("temperature_2m_mean") is not None
+    ]
+    normals = [
+        float(row["temperature_normal"])
+        for row in forecast_rows
+        if row.get("temperature_normal") is not None
+    ]
+    precipitation = [
+        float(row.get("precipitation_sum") or 0)
+        for row in forecast_rows
+    ]
+    winds = [
+        float(row.get("wind_speed_10m_max") or 0)
+        for row in forecast_rows
+    ]
+    anomaly_labels = [
+        str(row.get("anomaly_label"))
+        for row in forecast_rows
+        if row.get("is_anomaly") and row.get("anomaly_label")
+    ]
+    sources = sorted({
+        str(row.get("source"))
+        for row in forecast_rows
+        if row.get("source")
+    })
+    avg_temp = _average(temperatures)
+    normal_temp = _average(normals)
+    return {
+        "status": context.get("status"),
+        "provider": context.get("provider"),
+        "location": context.get("location"),
+        "period": f"{target_start.isoformat()}..{target_end.isoformat()}",
+        "days": len(forecast_rows),
+        "temperature_mean_c": round(avg_temp, 1) if avg_temp is not None else None,
+        "temperature_normal_c": round(normal_temp, 1) if normal_temp is not None else None,
+        "temperature_delta_c": round(avg_temp - normal_temp, 1) if avg_temp is not None and normal_temp is not None else None,
+        "temperature_min_c": round(min(temperatures), 1) if temperatures else None,
+        "temperature_max_c": round(max(temperatures), 1) if temperatures else None,
+        "precipitation_total_mm": round(sum(precipitation), 1) if precipitation else None,
+        "wet_days": sum(1 for value in precipitation if value >= 1.0),
+        "windy_days": sum(1 for value in winds if value >= 35.0),
+        "anomaly_days": len(anomaly_labels),
+        "anomaly_labels": sorted(set(anomaly_labels)),
+        "sources": sources[:4],
+        "message": context.get("message"),
+    }
+
+
+@app.get("/api/v1/ai/overview-forecast", tags=["ai"])
+def overview_ai_forecast(db: Session = Depends(get_db)) -> dict[str, object]:
+    settings_row = get_or_create_ai_settings(db)
+    if not effective_api_key(settings_row):
+        return {"available": False, "reason": "openai_api_key_missing"}
+
+    dashboard = build_energy_business_dashboard(db)
+    monthly_series = dashboard.get("monthly_series") or []
+    forecast = dashboard.get("forecast") or {}
+    backtest = forecast.get("backtest") or {}
+    forecast_timezone = get_settings().forecast_timezone
+    today = datetime.now(ZoneInfo(forecast_timezone)).date()
+    target_year = today.year + (1 if today.month == 12 else 0)
+    target_month = 1 if today.month == 12 else today.month + 1
+    target_forecast_period = f"{target_year:04d}-{target_month:02d}"
+    target_start = date(target_year, target_month, 1)
+    target_end = date(target_year, target_month, monthrange(target_year, target_month)[1])
+    weather_summary = _overview_weather_summary(
+        target_start=target_start,
+        target_end=target_end,
+        today=today,
+    )
+    forecast_period = str(forecast.get("period") or "")
+    forecast_matches_target = forecast_period == target_forecast_period
+    forecast_start = date.fromisoformat(f"{forecast_period}-01") if re.fullmatch(r"\d{4}-\d{2}", forecast_period) else None
+    forecast_end = (
+        date(forecast_start.year + (1 if forecast_start.month == 12 else 0), 1 if forecast_start.month == 12 else forecast_start.month + 1, 1)
+        if forecast_start
+        else None
+    )
+    if forecast_end:
+        forecast_end = date.fromordinal(forecast_end.toordinal() - 1)
+    if forecast_start and forecast_end and forecast_start <= today <= forecast_end:
+        forecast_position = "current_month"
+    elif forecast_start and today < forecast_start:
+        forecast_position = "future_month"
+    elif forecast_end and today > forecast_end:
+        forecast_position = "past_month"
+    else:
+        forecast_position = "unknown"
+    has_enough_monthly = len(monthly_series) >= 3
+    has_ready_forecast = forecast.get("status") == "ready"
+    has_backtest = backtest.get("status") == "ready" and int(backtest.get("periods") or 0) >= 2
+    if not (has_enough_monthly and has_ready_forecast and has_backtest):
+        return {
+            "available": False,
+            "reason": "insufficient_data",
+            "requirements": {
+                "monthly_periods": len(monthly_series),
+                "forecast_status": forecast.get("status"),
+                "backtest_periods": backtest.get("periods") or 0,
+            },
+        }
+
+    task_instruction = (
+        "Сформируй компактную секцию «AI прогноз» для главной страницы. "
+        f"Сегодня {today.isoformat()} в таймзоне {forecast_timezone}. "
+        f"Целевой период AI-прогноза: {target_forecast_period} — следующий календарный месяц "
+        f"после сегодняшней даты, не текущий месяц. Расчётный период модели: "
+        f"{forecast_period or 'не определён'}, состояние расчётного периода: {forecast_position}, "
+        f"совпадает с целевым периодом: {forecast_matches_target}. "
+        "Используй только energy_dashboard: forecast, monthly_series, kpis, "
+        "top_external_consumers, reconciliation, data_quality и weather_context_for_target_period. "
+        "Погодный контекст уже получен внешним вызовом к Open-Meteo за целевой период: "
+        f"{json.dumps(weather_summary, ensure_ascii=False, default=str)}. "
+        "Обязательно сделай одну отдельную секцию про погоду в sections: если есть отклонение "
+        "температуры, осадки, ветер или аномалии — объясни операционный смысл; если "
+        "погода близка к норме — прямо скажи, что погодный фактор не выглядит главным "
+        "драйвером. Не придумывай погодные причины сверх weather_context_for_target_period. "
+        "Верни только полезные инсайт-секции в sections: каждая секция должна отвечать на вопрос "
+        "«что изменится / где риск / что проверить», а не пересказывать наличие данных. "
+        "Не добавляй секцию про деньги, если тарифа, цены кВт·ч или денежных данных нет. "
+        "Не добавляй секции с очевидными ограничениями вроде «данных недостаточно»; "
+        "такие ограничения пиши только в caveat или confidence.basis. Не делай выводы "
+        "по пикам, суточному профилю или погоде, если daily_series или weather model "
+        "недостаточны. Если расчётный период модели не совпадает с целевым, не выдавай "
+        "значения forecast.period за прямой прогноз целевого месяца: используй их как "
+        "ближайший модельный ориентир вместе с monthly_series и явно отметь ограничение "
+        "в confidence.basis или caveat. В этом случае не используй уверенные формулировки "
+        "«ожидается», «прогноз» или «будет» для целевого месяца; пиши «ориентир на "
+        "целевой месяц», «предварительная оценка» или «сценарная оценка». В headline "
+        "и sections называй целевой месяц, а не текущий месяц. "
+        "Не придумывай причины изменений. Пиши коротко для руководителя. "
+        "Оптимально 2-3 секции; 4 используй только если каждая несёт отдельное действие. "
+        "без имён JSON-полей, слова reported и внутренних терминов."
+    )
+    try:
+        content, response_id, model = ask_energy_ai(
+            db,
+            include_history=False,
+            response_model=OverviewForecastBrief,
+            task_instruction=task_instruction,
+            user_message="Подготовь AI-прогноз для страницы «Сводка».",
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Не удалось получить ответ OpenAI: {exc}") from exc
+
+    return {
+        "available": True,
+        "model": model,
+        "response_id": response_id,
+        "data_basis": {
+            "monthly_periods": len(monthly_series),
+            "target_forecast_period": target_forecast_period,
+            "forecast_period": forecast.get("period"),
+            "source_period": forecast.get("source_period"),
+            "today": today.isoformat(),
+            "timezone": forecast_timezone,
+            "forecast_position": forecast_position,
+            "forecast_matches_target": forecast_matches_target,
+            "weather_status": weather_summary.get("status"),
+            "weather_days": weather_summary.get("days"),
+            "backtest_periods": backtest.get("periods") or 0,
+            "daily_days": dashboard.get("kpis", {}).get("coverage_days") or 0,
+        },
+        "content": json.loads(content),
+    }
 
 
 def _insight_chat_message(content: str, filename: str) -> str:

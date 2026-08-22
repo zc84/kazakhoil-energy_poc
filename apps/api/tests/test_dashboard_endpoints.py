@@ -137,6 +137,9 @@ class DashboardEndpointTests(unittest.TestCase):
         self.assertEqual(payload["kpis"]["days"], 1)
         self.assertEqual(payload["kpis"]["objects"], 1)
         self.assertEqual(payload["table"][0]["meter_number"], "51555226")
+        self.assertEqual(payload["table"][0]["meter_number_source"], "Столбец C")
+        self.assertEqual(payload["table"][0]["consumption_source"], "Расчёт: (G - F) × E")
+        self.assertEqual(payload["series"][0]["meter_number"], "51555226")
 
     def test_energy_dashboard_reconciles_external_detail(self) -> None:
         response = self.client.get("/api/v1/dashboards/energy-business")
