@@ -129,6 +129,45 @@ class ValidationIssue(TimestampMixin, Base):
     batch: Mapped[ImportBatch] = relationship(back_populates="issues")
 
 
+class EnergyPoint(TimestampMixin, Base):
+    """A canonical metering point (substation/RP) or the external supply line.
+
+    Catalog membership is data, not code: `active_from`/`active_to` scope a
+    point to the periods it actually existed, so the "how many points" count
+    is derived per-period from this table rather than a fixed constant.
+    """
+
+    __tablename__ = "energy_points"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    code: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    site: Mapped[str] = mapped_column(String(32), nullable=False)
+    ownership: Mapped[str] = mapped_column(String(16), nullable=False)
+    active_from: Mapped[date | None] = mapped_column(Date, nullable=True)
+    active_to: Mapped[date | None] = mapped_column(Date, nullable=True)
+
+    aliases: Mapped[list["EnergyPointAlias"]] = relationship(
+        back_populates="point", cascade="all, delete-orphan", order_by="EnergyPointAlias.id"
+    )
+
+
+class EnergyPointAlias(TimestampMixin, Base):
+    """A normalized substring seen in real workbook titles for one point."""
+
+    __tablename__ = "energy_point_aliases"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    point_id: Mapped[int] = mapped_column(ForeignKey("energy_points.id"), nullable=False)
+    alias: Mapped[str] = mapped_column(String(200), nullable=False)
+
+    point: Mapped[EnergyPoint] = relationship(back_populates="aliases")
+
+    __table_args__ = (
+        Index("ix_energy_point_aliases_point_id", "point_id"),
+    )
+
+
 class AISettings(TimestampMixin, Base):
     __tablename__ = "ai_settings"
 

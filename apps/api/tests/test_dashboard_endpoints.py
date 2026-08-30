@@ -5,13 +5,14 @@ import tempfile
 import unittest
 
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.db import Base, get_db
 from app.main import app
-from app.models import DatasetKind, ImportBatch, ImportFile, ImportStatus, StagingRow, ValidationIssue, ValidationSeverity
+from app.models import DatasetKind, EnergyPoint, ImportBatch, ImportFile, ImportStatus, StagingRow, ValidationIssue, ValidationSeverity
+from app.services.energy_catalog import seed_default_energy_points
 
 
 class DashboardEndpointTests(unittest.TestCase):
@@ -23,6 +24,8 @@ class DashboardEndpointTests(unittest.TestCase):
         )
         Base.metadata.create_all(self.engine)
         self.Session = sessionmaker(bind=self.engine, autoflush=False, autocommit=False)
+        with self.Session() as db:
+            seed_default_energy_points(db)
         self._seed()
 
         def override_db():
@@ -238,6 +241,65 @@ class DashboardEndpointTests(unittest.TestCase):
 
         missing_response = self.client.get("/api/v1/dashboards/technical-balance?period=2026-01")
         self.assertEqual(missing_response.json()["meta"], {"dataset_kind": "technical_balance"})
+
+    def test_catalog_size_reflects_points_added_and_retired_by_period(self) -> None:
+        """The catalog is data (energy_points), not a hardcoded count: a point
+        retired mid-year must disappear from later periods but stay visible
+        for periods it covered, and a point added later must appear only from
+        its active_from onward — proven on periods that already exist
+        (March, from `_seed()`) plus two more added here (April, May)."""
+        with self.Session() as db:
+            april = ImportBatch(
+                original_filename="Тех. баланс за апрель 2026.xls",
+                checksum_sha256="j" * 64,
+                status=ImportStatus.ready_to_publish,
+                dataset_kind=DatasetKind.technical_balance,
+                total_sheets=1, total_rows=1, accepted_rows=1,
+            )
+            may = ImportBatch(
+                original_filename="Тех. баланс за май 2026.xls",
+                checksum_sha256="k" * 64,
+                status=ImportStatus.ready_to_publish,
+                dataset_kind=DatasetKind.technical_balance,
+                total_sheets=1, total_rows=1, accepted_rows=1,
+            )
+            db.add_all([april, may])
+            db.flush()
+            db.add_all([
+                StagingRow(batch_id=april.id, sheet_name="Тех.Учёт", row_index=1,
+                           raw_json=json.dumps(['Ввод апрель', "ARTM", 7001, None, 10, 0, 1, 10])),
+                StagingRow(batch_id=may.id, sheet_name="Тех.Учёт", row_index=1,
+                           raw_json=json.dumps(['Ввод май', "ARTM", 7002, None, 10, 0, 1, 10])),
+            ])
+
+            retiring = db.scalar(select(EnergyPoint).where(EnergyPoint.code == "alibekmola-gazzavod-rp"))
+            retiring.active_to = date(2026, 3, 31)
+            new_point = EnergyPoint(
+                code="alibekmola-new-rp", name="РП-Новая", site="alibekmola", ownership="koa",
+                active_from=date(2026, 5, 1),
+            )
+            db.add(new_point)
+            db.commit()
+
+        def totals_and_ids(period: str) -> tuple[int, set[str]]:
+            payload = self.client.get(f"/api/v1/dashboards/technical-balance?period={period}").json()
+            ids = {item["id"] for item in payload["breakdowns"]}
+            return payload["kpis"]["catalog_points_total"], ids
+
+        march_total, march_ids = totals_and_ids("2026-03")
+        self.assertEqual(march_total, 10)
+        self.assertIn("alibekmola-gazzavod-rp", march_ids)
+        self.assertNotIn("alibekmola-new-rp", march_ids)
+
+        april_total, april_ids = totals_and_ids("2026-04")
+        self.assertEqual(april_total, 9)
+        self.assertNotIn("alibekmola-gazzavod-rp", april_ids)
+        self.assertNotIn("alibekmola-new-rp", april_ids)
+
+        may_total, may_ids = totals_and_ids("2026-05")
+        self.assertEqual(may_total, 10)
+        self.assertNotIn("alibekmola-gazzavod-rp", may_ids)
+        self.assertIn("alibekmola-new-rp", may_ids)
 
     def test_daily_consumption_endpoint_returns_meter_ranking(self) -> None:
         response = self.client.get("/api/v1/dashboards/daily-consumption")

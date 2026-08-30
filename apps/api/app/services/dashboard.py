@@ -296,40 +296,49 @@ def _daily_row_title(cells: list[object]) -> str | None:
     return None
 
 
-def _catalog_breakdown(raw_totals: dict[str, float]) -> tuple[list[dict[str, object]], int]:
-    """Resolve raw dynamic section titles onto the 10 canonical KOA points
-    plus the external line (docs/SMART_IMPLEMENTATION_PLAN.md, section 3.1).
+def _catalog_breakdown(
+    db: Session,
+    period_start: date | None,
+    period_end: date | None,
+    raw_totals: dict[str, float],
+) -> tuple[list[dict[str, object]], int, int]:
+    """Resolve raw dynamic section titles onto the KOA points active for this
+    period, plus the external line (docs/SMART_IMPLEMENTATION_PLAN.md, 3.1).
 
-    Returns the breakdown list (10 catalog points, in catalog order, each
-    carrying its raw source titles for drill-down) plus how many of the 10
-    KOA points had at least one matching raw title with a positive value.
+    The catalog and its size are read from `energy_points` for the given
+    period — not a fixed count — so a point added or retired between periods
+    changes what "found N of M" means for that period, and only that period.
+
+    Returns the breakdown list (active points, each carrying its raw source
+    titles for drill-down), how many KOA points had a matching raw title with
+    a positive value, and how many KOA points were active for this period.
     """
+    points = energy_catalog.active_points(db, period_start, period_end)
     catalog_totals: dict[str, float] = defaultdict(float)
     catalog_sources: dict[str, list[dict[str, object]]] = defaultdict(list)
     unresolved_total = 0.0
     unresolved_sources: list[dict[str, object]] = []
     for raw_name, value in raw_totals.items():
-        point = energy_catalog.resolve_title(raw_name)
+        point = energy_catalog.resolve_title_against(points, raw_name)
         if point is None:
             unresolved_total += value
             unresolved_sources.append({"name": raw_name, "value": value})
             continue
-        catalog_totals[point.id] += value
-        catalog_sources[point.id].append({"name": raw_name, "value": value})
+        catalog_totals[point.code] += value
+        catalog_sources[point.code].append({"name": raw_name, "value": value})
 
-    resolved_koa_points = sum(
-        1 for point in energy_catalog.CATALOG_POINTS if catalog_totals.get(point.id, 0.0) > 0
-    )
+    koa_points = [point for point in points if point.ownership == "koa"]
+    resolved_koa_points = sum(1 for point in koa_points if catalog_totals.get(point.code, 0.0) > 0)
     breakdown = [
         {
-            "id": point.id,
+            "id": point.code,
             "name": point.name,
             "site": point.site,
-            "value": catalog_totals.get(point.id, 0.0),
-            "resolved": point.id in catalog_totals,
-            "sources": sorted(catalog_sources.get(point.id, []), key=lambda item: item["value"], reverse=True),
+            "value": catalog_totals.get(point.code, 0.0),
+            "resolved": point.code in catalog_totals,
+            "sources": sorted(catalog_sources.get(point.code, []), key=lambda item: item["value"], reverse=True),
         }
-        for point in energy_catalog.ALL_POINTS
+        for point in points
     ]
     if unresolved_sources:
         breakdown.append(
@@ -342,7 +351,7 @@ def _catalog_breakdown(raw_totals: dict[str, float]) -> tuple[list[dict[str, obj
                 "sources": sorted(unresolved_sources, key=lambda item: item["value"], reverse=True),
             }
         )
-    return breakdown, resolved_koa_points
+    return breakdown, resolved_koa_points, len(koa_points)
 
 
 def _is_daily_load_section_start(label: str) -> bool:
@@ -1500,9 +1509,12 @@ def build_technical_balance_dashboard(db: Session, period: str | None = None) ->
         substation = item.get("substation")
         if substation:
             substation_totals[str(substation)] += float(item["value"])
-    catalog_breakdown, catalog_resolved = _catalog_breakdown(substation_totals)
-    kpis = energy.get("kpis") or {}
     period_info = period_info_from_batch(batch)
+    catalog_period_start, catalog_period_end = _period_bounds(period_info[0] if period_info else None)
+    catalog_breakdown, catalog_resolved, catalog_total = _catalog_breakdown(
+        db, catalog_period_start, catalog_period_end, substation_totals
+    )
+    kpis = energy.get("kpis") or {}
     return {
         "meta": {
             "dataset_kind": DatasetKind.technical_balance.value,
@@ -1517,7 +1529,7 @@ def build_technical_balance_dashboard(db: Session, period: str | None = None) ->
             "objects": len(table),
             "duplicate_meter_rows": len(table) - len(counted_rows),
             "catalog_points_resolved": catalog_resolved,
-            "catalog_points_total": len(energy_catalog.CATALOG_POINTS),
+            "catalog_points_total": catalog_total,
         },
         "series": [
             {"name": item["name"], "value": item["value"], "substation": item["substation"]}
@@ -1593,7 +1605,10 @@ def build_daily_consumption_dashboard(db: Session, period: str | None = None) ->
     for item in table:
         if item.get("substation"):
             substation_totals[str(item["substation"])] += float(item["value"])
-    catalog_breakdown, catalog_resolved = _catalog_breakdown(substation_totals)
+    catalog_period_start, catalog_period_end = _period_bounds(resolved_period)
+    catalog_breakdown, catalog_resolved, catalog_total = _catalog_breakdown(
+        db, catalog_period_start, catalog_period_end, substation_totals
+    )
     peak = max(daily_totals, key=lambda item: float(item["value"]), default=None)
     return {
         "meta": {
@@ -1608,7 +1623,7 @@ def build_daily_consumption_dashboard(db: Session, period: str | None = None) ->
             "total_kwh": sum(float(item["value"]) for item in table),
             "peak_day": peak,
             "catalog_points_resolved": catalog_resolved,
-            "catalog_points_total": len(energy_catalog.CATALOG_POINTS),
+            "catalog_points_total": catalog_total,
         },
         "series": [
             {
