@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Iterable
 
@@ -115,6 +116,42 @@ def is_meter_row(cells: list[object]) -> bool:
     )
 
 
+def _row_title(cells: list[object]) -> str:
+    text_parts: list[str] = []
+    for value in cells[:4]:
+        text = _text(value)
+        if text:
+            text_parts.append(text)
+    return " ".join(text_parts)
+
+
+def _normalized_text(value: str) -> str:
+    return value.casefold().replace("ё", "е")
+
+
+def is_technical_context_title(cells: list[object]) -> bool:
+    if is_meter_row(cells):
+        return False
+    title = _row_title(cells)
+    if not title:
+        return False
+    normalized = _normalized_text(title)
+    if normalized.startswith(("итого", "потери", "сторонние организации", "наименование")):
+        return False
+    if _numberish(_cell(cells, COEFFICIENT_COL)) or _value_or_formula(_cell(cells, CONSUMPTION_COL)):
+        return False
+    return bool(
+        re.search(r"\bп/?с\b|\bп/ст\b|\bрп\b", normalized)
+        or "площадка" in normalized
+        or "газзавод" in normalized
+        or "баланс по стороне" in normalized
+        or "баланс по 0,4" in normalized
+        or "баланс по 0.4" in normalized
+        or "ячейки" in normalized
+        or normalized.startswith("по вл")
+    )
+
+
 def is_commercial_consumption_row(cells: list[object]) -> bool:
     return (
         _numberish(_cell(cells, ACT_SERIAL_COL))
@@ -211,10 +248,27 @@ def _title_from_rows(
     return _text(_cell(rows_by_index.get(title_row, []), title_col)) or fallback
 
 
+def _dynamic_technical_context_for_row(
+    row_index: int,
+    technical_rows: list[tuple[object, list[object]]],
+) -> str | None:
+    active_title: str | None = None
+    for row, cells in sorted(technical_rows, key=lambda item: getattr(item[0], "row_index")):
+        current_row_index = getattr(row, "row_index")
+        if current_row_index > row_index:
+            break
+        if is_technical_context_title(cells):
+            active_title = _row_title(cells)
+    return active_title
+
+
 def technical_context_for_row(
     row_index: int,
     technical_rows: list[tuple[object, list[object]]],
 ) -> str | None:
+    dynamic_context = _dynamic_technical_context_for_row(row_index, technical_rows)
+    if dynamic_context:
+        return dynamic_context
     rows_by_index = _rows_by_index(technical_rows)
     for block in TECHNICAL_BLOCKS:
         if block.contains(row_index):

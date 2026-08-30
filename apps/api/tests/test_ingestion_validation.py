@@ -5,6 +5,7 @@ import openpyxl
 
 from app.models import DatasetKind, ValidationSeverity
 from app.services.ingestion import parse_file
+from app.services.periods import extract_daily_sheet_date
 
 
 def workbook_payload(sheet_name: str, rows: list[list[object]]) -> bytes:
@@ -77,6 +78,34 @@ def commercial_consumption_payload() -> bytes:
 
 
 class IngestionValidationTests(unittest.TestCase):
+    def test_daily_period_comes_from_workbook_header_without_year_in_filename(self) -> None:
+        workbook = openpyxl.Workbook()
+        workbook.remove(workbook.active)
+        for sheet_name, header_date in (("01.07", "01.07.2026"), ("02.07", "02.07.2026")):
+            sheet = workbook.create_sheet(sheet_name)
+            sheet.append(["Наименование", "Тип ПУ", "№ ПУ", "Тр-р", "Коэф.", "Показания", None, "Расход"])
+            sheet.append([None, None, None, None, None, "30.06.2026", header_date, "в кВтч"])
+            sheet.append(["Итого по вводам 6 кВ"])
+        payload = BytesIO()
+        workbook.save(payload)
+
+        parsed = parse_file("Ежедневная сводка потребления- июль.xlsx", payload.getvalue())
+
+        self.assertEqual(parsed.period_start.isoformat(), "2026-07-01")
+        self.assertEqual(parsed.period_end.isoformat(), "2026-07-31")
+        self.assertEqual(parsed.period_source, "workbook_header")
+
+    def test_daily_sheet_header_mismatch_is_explicit_issue(self) -> None:
+        parsed = parse_file(
+            "daily.xlsx",
+            workbook_payload("27.07", [["Наименование"], [None, None, None, None, None, None, "27.06.2026"]]),
+        )
+
+        self.assertEqual(parsed.period_start.isoformat(), "2026-06-01")
+        self.assertTrue(any(issue.rule_code == "SHEET_DATE_NAME_MISMATCH" for issue in parsed.issues))
+
+    def test_extract_daily_sheet_date_prefers_g2(self) -> None:
+        self.assertEqual(extract_daily_sheet_date([None] * 6 + ["02.07.2026"], "02.07").isoformat(), "2026-07-02")
     def test_unknown_workbook_template_returns_validation_error(self) -> None:
         payload = workbook_payload(
             "Комм. Июль 2026г.",

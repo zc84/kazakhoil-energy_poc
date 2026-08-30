@@ -295,9 +295,16 @@ function percentile(values, ratio) {
   return sorted[index]
 }
 
+function daysInPeriod(period) {
+  const [year, month] = String(period || '').split('-').map(Number)
+  if (!year || !month) return 0
+  return new Date(Date.UTC(year, month, 0)).getUTCDate()
+}
+
 function buildDailySignals(daily) {
   const values = daily.map(item => Number(item.value || 0)).filter(Number.isFinite)
   const controlLimit = percentile(values, .9)
+  const average = values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0
   const changes = daily.slice(1).map((item, index) => {
     const previous = daily[index]
     const previousValue = Number(previous?.value || 0)
@@ -316,11 +323,18 @@ function buildDailySignals(daily) {
 
   return {
     controlLimit,
+    average,
     events: changes
       .sort((a, b) => Math.abs(b.deltaPct) - Math.abs(a.deltaPct))
       .slice(0, 5),
   }
 }
+
+const PEAK_SEGMENTS = [
+  { id: 'all', label: 'Все' },
+  { id: 'koa', label: 'КОА' },
+  { id: 'external', label: 'Субпотребители' },
+]
 
 function EmptyState({ title, text, actionLabel = 'Нужны данные', onAction }) {
   return <div className="recon-note">
@@ -1278,6 +1292,7 @@ function SourceDashboard({ kind, hasImports, onOpenQuality }) {
   const config = kind === 'technical'
     ? {
         endpoint: '/api/v1/dashboards/technical-balance',
+        datasetKind: 'technical_balance',
         emptyTitle: 'Технический баланс ещё не загружен',
         loading: 'Собираем технический баланс…',
         chartTitle: 'Крупнейшие объекты учёта',
@@ -1285,6 +1300,7 @@ function SourceDashboard({ kind, hasImports, onOpenQuality }) {
       }
     : {
         endpoint: '/api/v1/dashboards/daily-consumption',
+        datasetKind: 'daily_summary',
         emptyTitle: 'Ежедневная сводка ещё не загружена',
         loading: 'Собираем ежедневное потребление…',
         chartTitle: 'Общий расход по счётчикам',
@@ -1294,6 +1310,37 @@ function SourceDashboard({ kind, hasImports, onOpenQuality }) {
   const [loading, setLoading] = useState(hasImports)
   const [error, setError] = useState('')
   const [tableSearchQuery, setTableSearchQuery] = useState('')
+  const [selectedPeriod, setSelectedPeriod] = useState('')
+  const [selectedPoint, setSelectedPoint] = useState('')
+  const [periodsByKind, setPeriodsByKind] = useState({})
+
+  useEffect(() => {
+    let active = true
+    ;(async () => {
+      try {
+        const response = await apiFetch('/api/v1/filters')
+        if (!response.ok) return
+        const data = await parseJsonResponse(response)
+        if (active) setPeriodsByKind(data.periods_by_kind || {})
+      } catch {
+        // period selector degrades to "latest only"; not fatal
+      }
+    })()
+    return () => { active = false }
+  }, [hasImports])
+
+  // Not `imports[].period_start`: many existing batches predate that column
+  // being populated and would read as undated. `/api/v1/filters` resolves
+  // the period the same way the dashboards do (workbook header, then
+  // filename fallback), so it stays correct even for those rows.
+  const periodOptions = [...(periodsByKind[config.datasetKind] || [])].sort().reverse()
+
+  useEffect(() => {
+    if (selectedPeriod && periodOptions.length && !periodOptions.includes(selectedPeriod)) {
+      setSelectedPeriod('')
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [periodOptions.join(',')])
 
   useEffect(() => {
     if (!hasImports) {
@@ -1306,7 +1353,8 @@ function SourceDashboard({ kind, hasImports, onOpenQuality }) {
     setError('')
     ;(async () => {
       try {
-        const response = await apiFetch(config.endpoint)
+        const suffix = selectedPeriod ? `?period=${encodeURIComponent(selectedPeriod)}` : ''
+        const response = await apiFetch(`${config.endpoint}${suffix}`)
         if (!response.ok) throw new Error(`HTTP ${response.status}`)
         const data = await parseJsonResponse(response)
         if (active) setResult(data)
@@ -1317,7 +1365,7 @@ function SourceDashboard({ kind, hasImports, onOpenQuality }) {
       }
     })()
     return () => { active = false }
-  }, [hasImports, config.endpoint])
+  }, [hasImports, config.endpoint, selectedPeriod])
 
   if (!hasImports) {
     return <Card title={config.emptyTitle}>
@@ -1344,9 +1392,18 @@ function SourceDashboard({ kind, hasImports, onOpenQuality }) {
       object_name: item.name,
       name: item.meter_number ? `№ ${item.meter_number}` : item.name,
     }))
+  const visibleBreakdowns = result.breakdowns || []
+  const catalogResolved = kpis.catalog_points_resolved
+  const catalogTotal = kpis.catalog_points_total
+  const pointOptions = visibleBreakdowns.filter(item => (item.sources || []).length > 0)
+  const selectedPointSourceNames = selectedPoint
+    ? new Set((pointOptions.find(item => item.id === selectedPoint)?.sources || []).map(source => source.name))
+    : null
+  const byPoint = item => !selectedPointSourceNames || selectedPointSourceNames.has(item.substation)
   const normalizedTableSearchQuery = tableSearchQuery.trim().toLocaleLowerCase('ru-RU')
-  const tableRows = normalizedTableSearchQuery
-    ? (result.table || []).filter(item => [
+  const tableRows = (result.table || [])
+    .filter(byPoint)
+    .filter(item => !normalizedTableSearchQuery || [
       item.name,
       item.meter_number,
       item.meter_type,
@@ -1358,10 +1415,23 @@ function SourceDashboard({ kind, hasImports, onOpenQuality }) {
       item.meter_number_source,
       item.consumption_source,
     ].some(value => String(value || '').toLocaleLowerCase('ru-RU').includes(normalizedTableSearchQuery)))
-    : (result.table || [])
   const hasTableSearch = Boolean(normalizedTableSearchQuery)
+  const hasPointFilter = Boolean(selectedPoint)
 
   return <>
+    <div className="page-actions peak-page-actions">
+      <div className="peak-filter-bar">
+        <label><span>Период</span><div className="period-select-wrap peak-select-wrap"><CalendarDays/><select value={selectedPeriod} onChange={event => setSelectedPeriod(event.target.value)}>
+          <option value="">Последний период</option>
+          {periodOptions.map(period => <option key={period} value={period}>{fmtMonthYear(period)}</option>)}
+        </select><ChevronDown/></div></label>
+        <label><span>Точка</span><div className="period-select-wrap peak-select-wrap"><Factory/><select value={selectedPoint} onChange={event => setSelectedPoint(event.target.value)}>
+          <option value="">Все точки</option>
+          {pointOptions.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+        </select><ChevronDown/></div></label>
+      </div>
+      {loading && <span className="filter-loading">Обновляем…</span>}
+    </div>
     <section className="source-dashboard-hero">
       <div>
         <span>{isTechnical ? 'ТЕХНИЧЕСКИЙ БАЛАНС' : 'ЕЖЕДНЕВНОЕ ПОТРЕБЛЕНИЕ'} · {String(periodLabel || 'последний период').toUpperCase()}</span>
@@ -1375,7 +1445,7 @@ function SourceDashboard({ kind, hasImports, onOpenQuality }) {
         <KpiCard icon={Zap} label="Общий вход" value={mlnValue(kpis.total_kwh)} unit="млн кВт·ч" note={periodLabel}/>
         <KpiCard icon={Factory} label="Казахойл" value={mlnValue(kpis.own_kwh)} unit="млн кВт·ч" note="собственное потребление" tone="green"/>
         <KpiCard icon={Users} label="Внешние" value={mlnValue(kpis.external_kwh)} unit="млн кВт·ч" note="сторонние потребители" tone="yellow"/>
-        <KpiCard icon={Database} label="Строки учёта" value={fmt(kpis.objects)} unit="" note="с пересчитанным расходом" tone="blue"/>
+        <KpiCard icon={Database} label="Основные точки" value={fmt(catalogResolved)} unit={catalogTotal ? `/ ${fmt(catalogTotal)}` : ''} note="найдено в загруженном файле" tone="blue"/>
       </> : <>
         <KpiCard icon={CalendarDays} label="Дней" value={fmt(kpis.days)} unit="" note={periodLabel}/>
         <KpiCard icon={Gauge} label="Счётчиков" value={fmt(kpis.objects)} unit="" note="в рейтинге месяца" tone="blue"/>
@@ -1387,28 +1457,36 @@ function SourceDashboard({ kind, hasImports, onOpenQuality }) {
       <Card className="span-7 energy-chart-card" title={config.chartTitle} subtitle={config.chartSubtitle}>
         <div className="energy-chart source-ranking-chart">
           <Suspense fallback={<div className="result-chart-fallback">Строим рейтинг…</div>}>
-            <EnergyBusinessCharts kind="outgoing" data={rankingSeries.slice(0, 15)}/>
+            <EnergyBusinessCharts kind="outgoing" data={rankingSeries.filter(byPoint).slice(0, 15)}/>
           </Suspense>
         </div>
       </Card>
-      <Card className="span-5 energy-chart-card" title="Распределение по подстанциям" subtitle="Структура доступной детализации">
+      <Card
+        className="span-5 energy-chart-card"
+        title="Распределение по основным точкам"
+        subtitle={`Каталог точек Алибекмола и Кожасай · найдено ${fmt(catalogResolved)} из ${fmt(catalogTotal)}`}
+      >
         <div className="energy-chart groups-chart">
           <Suspense fallback={<div className="result-chart-fallback">Собираем подстанции…</div>}>
-            <EnergyBusinessCharts kind="external" data={result.breakdowns || []}/>
+            <EnergyBusinessCharts kind="external" data={visibleBreakdowns.filter(item => item.value > 0)}/>
           </Suspense>
         </div>
+        <p className="catalog-breakdown-note">
+          Значения в кВт·ч, не проценты от общего входа: точка и её дочерние линии/счётчики считаются вместе,
+          поэтому суммировать доли между точками нельзя (см. план раздела 3.3).
+        </p>
         <div className="energy-composition-summary external-groups-legend">
-          {(result.breakdowns || []).slice(0, 8).map((item, index) => <div key={item.name}>
+          {visibleBreakdowns.map((item, index) => <div key={item.id || item.name} className={item.resolved === false ? 'catalog-unresolved' : ''}>
             <span style={{ background: chartPalette[index % chartPalette.length] }}/>
-            <small>{item.name}</small>
-            <b>{totalValue ? new Intl.NumberFormat('ru-RU', { style: 'percent', maximumFractionDigits: 1 }).format(Number(item.value || 0) / totalValue) : '—'}</b>
+            <small title={(item.sources || []).map(source => source.name).join(', ') || undefined}>{item.name}</small>
+            <b>{item.resolved === false && !item.value ? 'нет данных' : `${mlnValue(item.value)} млн кВт·ч`}</b>
           </div>)}
         </div>
       </Card>
       <Card
         className="span-12"
         title={isTechnical ? 'Таблица объектов' : 'Таблица потребления'}
-        subtitle={hasTableSearch
+        subtitle={hasTableSearch || hasPointFilter
           ? `Найдено ${fmt(tableRows.length)} из ${fmt(result.table?.length || 0)}`
           : (isTechnical ? 'Номер прибора, подстанция и рассчитанный расход' : 'Номер прибора, источник колонок и рассчитанный расход')}
         action={<label className="source-table-search" aria-label={isTechnical ? 'Поиск объектов' : 'Поиск потребления'}>
@@ -1753,6 +1831,7 @@ function PeaksAndAnomaliesPage({ hasImports }) {
   const [calculablePeriods, setCalculablePeriods] = useState([])
   const [selectedPeriod, setSelectedPeriod] = useState('')
   const [selectedStation, setSelectedStation] = useState('')
+  const [segment, setSegment] = useState('all')
 
   useEffect(() => {
     if (!hasImports) {
@@ -1849,8 +1928,26 @@ function PeaksAndAnomaliesPage({ hasImports }) {
     }
     return Number(item.value || 0)
   }
-  const filteredDailySeries = periodDailySeries.map(item => ({ ...item, value: stationValue(item) }))
+  const shareByPeriod = new Map(
+    (result.monthly_series || []).map(item => [String(item.period), {
+      own: Number(item.own_share ?? 1),
+      external: Number(item.external_share ?? 0),
+    }]),
+  )
+  const segmentShare = (period) => {
+    if (segment === 'all') return 1
+    const share = shareByPeriod.get(String(period))
+    if (!share) return segment === 'koa' ? 1 : 0
+    return segment === 'koa' ? share.own : share.external
+  }
+  const filteredDailySeries = periodDailySeries.map(item => ({
+    ...item,
+    value: stationValue(item) * segmentShare(item.period || String(item.date || '').slice(0, 7)),
+  }))
   const dailySignals = buildDailySignals(filteredDailySeries)
+  const coveredPeriods = Array.from(new Set(filteredDailySeries.map(item => item.period || String(item.date || '').slice(0, 7))))
+  const expectedDays = coveredPeriods.reduce((sum, period) => sum + daysInPeriod(period), 0)
+  const coveragePercent = expectedDays ? filteredDailySeries.length / expectedDays : null
   const peakDay = filteredDailySeries.length
     ? filteredDailySeries.reduce((peak, item) => Number(item.value || 0) > Number(peak.value || 0) ? item : peak, filteredDailySeries[0])
     : null
@@ -1891,16 +1988,34 @@ function PeaksAndAnomaliesPage({ hasImports }) {
           <option value="">Все площадки</option>
           {stationOptions.map(station => <option key={station.id} value={station.id}>{station.name}</option>)}
         </select><ChevronDown/></div></label>
+        <div className="peak-segment-toggle" role="group" aria-label="Сегмент">
+          {PEAK_SEGMENTS.map(item => <button
+            key={item.id}
+            type="button"
+            className={segment === item.id ? 'active' : ''}
+            onClick={() => setSegment(item.id)}
+          >{item.label}</button>)}
+        </div>
       </div>
       {loading && <span className="filter-loading">Обновляем…</span>}
       <button className="export" type="button" onClick={exportPeaks}><Download/> Скачать</button>
     </div>
+    <p className="peak-segment-note">
+      {segment === 'all'
+        ? 'Показан общий контролируемый вход без разделения на КОА и субпотребителей.'
+        : `Значения оценены по доле ${segment === 'koa' ? 'КОА' : 'субпотребителей'} за соответствующий месяц технического баланса — прямого суточного разреза по субпотребителям в исходных данных нет.`}
+    </p>
     <section className="peak-signal-strip">
       <article className="peak-signal-primary">
         <span><Zap/></span>
-        <small>ПИКОВАЯ НАГРУЗКА</small>
+        <small>ПИКОВАЯ НАГРУЗКА{segment !== 'all' ? ` · ${PEAK_SEGMENTS.find(item => item.id === segment)?.label}` : ''}</small>
         <b>{dateLabel(peakDay?.date)}</b>
         <strong>{fmt(peakDay?.value)} кВт·ч</strong>
+      </article>
+      <article className="peak-signal-secondary">
+        <small>СРЕДНЕЕ ЗА ДЕНЬ</small>
+        <div className="peak-signal-value"><b>{fmt(dailySignals.average)}</b><strong>кВт·ч</strong></div>
+        <p>среднее по {fmt(filteredDailySeries.length)} дням выбранного периода и сегмента</p>
       </article>
       <article className="peak-signal-secondary">
         <small>РЕЗКИЕ ИЗМЕНЕНИЯ</small>
@@ -1915,10 +2030,16 @@ function PeaksAndAnomaliesPage({ hasImports }) {
         <div className="peak-signal-value"><b>{fmt(dailySignals.controlLimit)}</b><strong>кВт·ч</strong></div>
         <p>дни выше этого уровня считаются пиковыми</p>
       </article>
-      <article className={`peak-signal-secondary data-completeness ${attentionCount ? 'attention' : ''}`}>
+      <article
+        className={`peak-signal-secondary data-completeness ${attentionCount ? 'attention' : ''}`}
+        title={`Загружено дневных строк: ${fmt(filteredDailySeries.length)} из ${fmt(expectedDays)} ожидаемых по календарю выбранного периода (${coveredPeriods.filter(Boolean).map(fmtMonthYear).join(', ') || '—'}).`}
+      >
         <small>ПОЛНОТА ДНЕВНЫХ ДАННЫХ</small>
-        <div className="peak-signal-value"><b>{fmt(qualityKpis.coverage_days)}</b><strong>дней</strong></div>
-        <p>{fmt(attentionCount)} замечаний · отрицательные: {fmt(qualityKpis.negative_intervals)} · неполные: {fmt(qualityKpis.incomplete_intervals)}</p>
+        <div className="peak-signal-value">
+          <b>{fmt(filteredDailySeries.length)}{expectedDays ? ` / ${fmt(expectedDays)}` : ''}</b>
+          <strong>{coveragePercent != null ? `${(coveragePercent * 100).toFixed(0)}%` : 'дней'}</strong>
+        </div>
+        <p>факт/ожидание по календарю · {fmt(attentionCount)} замечаний · отрицательные: {fmt(qualityKpis.negative_intervals)} · неполные: {fmt(qualityKpis.incomplete_intervals)}</p>
       </article>
     </section>
     <Card
@@ -3389,14 +3510,13 @@ function AISettingsPage({ onOpenChat, onRestartOnboarding }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           api_key: apiKey.trim() || null,
-          model: settingsState.model,
           skill_prompt: settingsState.skill_prompt,
         }),
       })
       if (!response.ok) throw new Error(await readApiError(response))
       setSettingsState(await parseJsonResponse(response))
       setApiKey('')
-      setNotice('Настройки сохранены. Новая модель и промпт применятся к следующему ответу.')
+      setNotice('Настройки сохранены. Новый промпт применится к следующему ответу.')
     } catch (err) {
       setError(err.message || 'Не удалось сохранить настройки AI')
     } finally {
@@ -3413,7 +3533,6 @@ function AISettingsPage({ onOpenChat, onRestartOnboarding }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           clear_api_key: true,
-          model: settingsState.model,
           skill_prompt: settingsState.skill_prompt,
         }),
       })
@@ -3435,7 +3554,6 @@ function AISettingsPage({ onOpenChat, onRestartOnboarding }) {
     </Card>
   }
 
-  const selectedModel = settingsState.models.find(item => item.id === settingsState.model)
   return <div className="ai-settings-page">
     <section className="ai-settings-hero">
       <div>
@@ -3470,17 +3588,6 @@ function AISettingsPage({ onOpenChat, onRestartOnboarding }) {
           ? `Сейчас активен ${settingsState.masked_api_key}. Оставьте поле пустым, чтобы не менять ключ.`
           : 'Добавьте ключ проекта, чтобы получать AI-разбор после загрузки и задавать вопросы данным.'}</p>
         {settingsState.has_api_key && <button className="ai-text-danger" type="button" onClick={clearKey}>Удалить сохранённый ключ</button>}
-      </Card>
-
-      <Card className="ai-settings-card" title="Модель" subtitle="Модель для разбора загрузок и чата">
-        <div className="ai-model-select">
-          <Bot/>
-          <select value={settingsState.model} onChange={event => updateField('model', event.target.value)}>
-            {settingsState.models.map(model => <option key={model.id} value={model.id}>{model.label}</option>)}
-          </select>
-          <ChevronDown/>
-        </div>
-        <div className="ai-model-meta"><Sparkles/><span><b>{selectedModel?.label}</b><small>{selectedModel?.hint}</small></span></div>
       </Card>
 
       <Card className="ai-prompt-card" title="Системная инструкция" subtitle="Роль, ограничения и формат ответа">

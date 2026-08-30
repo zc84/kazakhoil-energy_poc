@@ -1,4 +1,5 @@
 import json
+from datetime import date
 from pathlib import Path
 import tempfile
 import unittest
@@ -78,6 +79,18 @@ class DashboardEndpointTests(unittest.TestCase):
                 ),
                 StagingRow(
                     batch_id=technical.id,
+                    sheet_name="Тех.Учёт",
+                    row_index=56,
+                    raw_json=json.dumps(['ПС 35/6 "Северная"']),
+                ),
+                StagingRow(
+                    batch_id=technical.id,
+                    sheet_name="Тех.Учёт",
+                    row_index=57,
+                    raw_json=json.dumps(["Линия 6кВ Север-1", "ARTM", 3001, None, 10, 0, 3, 30]),
+                ),
+                StagingRow(
+                    batch_id=technical.id,
                     sheet_name="Сторонние организации",
                     row_index=1,
                     raw_json=json.dumps(["Потребление сторонних организаций м/р Кожасай"]),
@@ -122,6 +135,14 @@ class DashboardEndpointTests(unittest.TestCase):
             db.add_all(rows)
             db.commit()
 
+    def test_filters_endpoint_surfaces_ready_to_publish_batches_by_kind(self) -> None:
+        response = self.client.get("/api/v1/filters")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("2026-03", payload["periods"])
+        self.assertEqual(payload["periods_by_kind"].get("technical_balance"), ["2026-03"])
+        self.assertEqual(payload["periods_by_kind"].get("daily_summary"), ["2026-03"])
+
     def test_technical_balance_endpoint_returns_operational_rows(self) -> None:
         response = self.client.get("/api/v1/dashboards/technical-balance")
         self.assertEqual(response.status_code, 200)
@@ -129,6 +150,94 @@ class DashboardEndpointTests(unittest.TestCase):
         self.assertEqual(payload["meta"]["period"], "2026-03")
         self.assertEqual(payload["kpis"]["external_kwh"], 20)
         self.assertGreaterEqual(len(payload["table"]), 1)
+        sever_point = next(item for item in payload["breakdowns"] if item["id"] == "alibekmola-sever")
+        self.assertEqual(sever_point["value"], 30.0)
+        self.assertTrue(sever_point["resolved"])
+        self.assertIn({"name": 'ПС 35/6 "Северная"', "value": 30.0}, sever_point["sources"])
+        self.assertEqual(payload["kpis"]["catalog_points_total"], 10)
+        self.assertEqual(payload["kpis"]["catalog_points_resolved"], 1)
+
+    def test_technical_balance_deduplicates_repeated_meter_rows(self) -> None:
+        with self.Session() as db:
+            batch = ImportBatch(
+                original_filename="Тех. баланс за апрель 2026.xls",
+                checksum_sha256="h" * 64,
+                status=ImportStatus.ready_to_publish,
+                dataset_kind=DatasetKind.technical_balance,
+                total_sheets=1,
+                total_rows=3,
+                accepted_rows=3,
+            )
+            db.add(batch)
+            db.flush()
+            db.add_all([
+                StagingRow(
+                    batch_id=batch.id,
+                    sheet_name="Тех.Учёт",
+                    row_index=10,
+                    raw_json=json.dumps(['Ввод 110кВ от ПС-110/35/6кВ "Кенкияк"', "ARTM", 51555191, None, 132000, 0, 3.457, 3456829.2]),
+                ),
+                StagingRow(
+                    batch_id=batch.id,
+                    sheet_name="Тех.Учёт",
+                    row_index=307,
+                    raw_json=json.dumps([None, 'П/С 35/6 "Кожасай"']),
+                ),
+                StagingRow(
+                    batch_id=batch.id,
+                    sheet_name="Тех.Учёт",
+                    row_index=474,
+                    raw_json=json.dumps(['Ввод 110кВ от ПС-110/35/6кВ "Кенкияк"', "ARTM", 51555191, None, 132000, 0, 3.457, 3456829.2]),
+                ),
+            ])
+            db.commit()
+
+        response = self.client.get("/api/v1/dashboards/technical-balance")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["meta"]["period"], "2026-04")
+        rows = [item for item in payload["table"] if item["meter_number"] == "51555191"]
+        self.assertEqual(len(rows), 2, "both occurrences stay visible for lineage")
+        duplicate_rows = [item for item in rows if item["is_duplicate"]]
+        original_rows = [item for item in rows if not item["is_duplicate"]]
+        self.assertEqual(len(duplicate_rows), 1)
+        self.assertEqual(duplicate_rows[0]["duplicate_of_row"], original_rows[0]["row"])
+        kozhasai_point = next(item for item in payload["breakdowns"] if item["id"] == "kozhasai-ps")
+        self.assertEqual(
+            kozhasai_point["value"], 0.0,
+            "the duplicate row (attributed to Kozhasai by row position) must not be double-counted",
+        )
+        self.assertEqual(payload["kpis"]["duplicate_meter_rows"], 1)
+
+    def test_technical_balance_period_filter_selects_matching_batch(self) -> None:
+        with self.Session() as db:
+            april_batch = ImportBatch(
+                original_filename="Тех. баланс за апрель 2026.xls",
+                checksum_sha256="i" * 64,
+                status=ImportStatus.ready_to_publish,
+                dataset_kind=DatasetKind.technical_balance,
+                total_sheets=1,
+                total_rows=1,
+                accepted_rows=1,
+            )
+            db.add(april_batch)
+            db.flush()
+            db.add(StagingRow(
+                batch_id=april_batch.id,
+                sheet_name="Тех.Учёт",
+                row_index=1,
+                raw_json=json.dumps(['Ввод 110кВ апрель', "ARTM", 9001, None, 10, 0, 5, 50]),
+            ))
+            db.commit()
+
+        default_response = self.client.get("/api/v1/dashboards/technical-balance")
+        self.assertEqual(default_response.json()["meta"]["period"], "2026-04")
+
+        march_response = self.client.get("/api/v1/dashboards/technical-balance?period=2026-03")
+        self.assertEqual(march_response.json()["meta"]["period"], "2026-03")
+
+        missing_response = self.client.get("/api/v1/dashboards/technical-balance?period=2026-01")
+        self.assertEqual(missing_response.json()["meta"], {"dataset_kind": "technical_balance"})
 
     def test_daily_consumption_endpoint_returns_meter_ranking(self) -> None:
         response = self.client.get("/api/v1/dashboards/daily-consumption")
@@ -190,6 +299,42 @@ class DashboardEndpointTests(unittest.TestCase):
         response = self.client.delete("/api/v1/imports/1")
 
         self.assertEqual(response.status_code, 409)
+
+    def test_publish_supersedes_previous_active_period_version(self) -> None:
+        with self.Session() as db:
+            previous = ImportBatch(
+                original_filename="Тех. баланс за март 2026.xls",
+                checksum_sha256="d" * 64,
+                content_fingerprint="e" * 64,
+                status=ImportStatus.published,
+                dataset_kind=DatasetKind.technical_balance,
+                period_start=date(2026, 3, 1),
+                period_end=date(2026, 3, 31),
+                published_at=None,
+            )
+            replacement = ImportBatch(
+                original_filename="Тех. баланс за март 2026 v2.xls",
+                checksum_sha256="f" * 64,
+                content_fingerprint="g" * 64,
+                status=ImportStatus.ready_to_publish,
+                dataset_kind=DatasetKind.technical_balance,
+                period_start=date(2026, 3, 1),
+                period_end=date(2026, 3, 31),
+            )
+            db.add_all([previous, replacement])
+            db.commit()
+            previous_id = previous.id
+            replacement_id = replacement.id
+
+        response = self.client.post(f"/api/v1/imports/{replacement_id}/publish")
+
+        self.assertEqual(response.status_code, 200)
+        with self.Session() as db:
+            current_previous = db.get(ImportBatch, previous_id)
+            current_replacement = db.get(ImportBatch, replacement_id)
+            self.assertFalse(current_previous.is_active)
+            self.assertEqual(current_replacement.supersedes_batch_id, current_previous.id)
+            self.assertTrue(current_replacement.is_active)
 
 
 if __name__ == "__main__":

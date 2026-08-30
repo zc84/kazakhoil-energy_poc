@@ -43,8 +43,7 @@ from .schemas import (
     ValidationIssueRead,
 )
 from .services.ai import (
-    AI_MODELS,
-    AI_MODEL_IDS,
+    FIXED_AI_MODEL,
     EnergyInsightBrief,
     OverviewForecastBrief,
     ask_energy_ai,
@@ -190,6 +189,10 @@ def create_import(
         accepted_rows=len(parsed.rows),
         warning_count=sum(1 for issue in parsed.issues if issue.severity == ValidationSeverity.warning),
         error_count=sum(1 for issue in parsed.issues if issue.severity == ValidationSeverity.error),
+        period_start=parsed.period_start,
+        period_end=parsed.period_end,
+        period_source=parsed.period_source,
+        content_fingerprint=parsed.content_fingerprint,
     )
     if batch.error_count:
         batch.status = ImportStatus.needs_review
@@ -342,8 +345,32 @@ def publish_import(batch_id: int, db: Session = Depends(get_db)) -> ImportBatch:
     batch = get_import(batch_id, db)
     if batch.error_count:
         raise HTTPException(status_code=409, detail="Файл нельзя опубликовать, пока есть ошибки проверки")
+    if batch.content_fingerprint:
+        duplicate = db.scalar(
+            select(ImportBatch).where(
+                ImportBatch.content_fingerprint == batch.content_fingerprint,
+                ImportBatch.id != batch.id,
+                ImportBatch.is_active.is_(True),
+            )
+        )
+        if duplicate is not None:
+            raise HTTPException(status_code=409, detail="Идентичное содержимое уже загружено")
+    previous = db.scalars(
+        select(ImportBatch).where(
+            ImportBatch.id != batch.id,
+            ImportBatch.dataset_kind == batch.dataset_kind,
+            ImportBatch.period_start == batch.period_start,
+            ImportBatch.is_active.is_(True),
+            ImportBatch.status == ImportStatus.published,
+        )
+    ).all()
+    now = datetime.now(timezone.utc)
+    for item in previous:
+        item.is_active = False
+        item.superseded_at = now
+        batch.supersedes_batch_id = item.id
     batch.status = ImportStatus.published
-    batch.published_at = datetime.now(timezone.utc)
+    batch.published_at = now
     db.add(batch)
     db.commit()
     db.refresh(batch)
@@ -429,8 +456,8 @@ def monthly_dashboard(
     response_model=DashboardRead,
     tags=["dashboards"],
 )
-def technical_balance_dashboard(db: Session = Depends(get_db)) -> dict[str, object]:
-    return build_technical_balance_dashboard(db)
+def technical_balance_dashboard(period: str | None = None, db: Session = Depends(get_db)) -> dict[str, object]:
+    return build_technical_balance_dashboard(db, period=period)
 
 
 @app.get(
@@ -438,8 +465,8 @@ def technical_balance_dashboard(db: Session = Depends(get_db)) -> dict[str, obje
     response_model=DashboardRead,
     tags=["dashboards"],
 )
-def daily_consumption_dashboard(db: Session = Depends(get_db)) -> dict[str, object]:
-    return build_daily_consumption_dashboard(db)
+def daily_consumption_dashboard(period: str | None = None, db: Session = Depends(get_db)) -> dict[str, object]:
+    return build_daily_consumption_dashboard(db, period=period)
 
 
 @app.get("/api/v1/dashboards/anomalies", response_model=DashboardRead, tags=["dashboards"])
@@ -508,7 +535,6 @@ def read_ai_settings(db: Session = Depends(get_db)) -> dict[str, object]:
         "skill_prompt": row.skill_prompt,
         "has_api_key": bool(key),
         "masked_api_key": mask_api_key(key),
-        "models": AI_MODELS,
     }
 
 
@@ -517,10 +543,8 @@ def update_ai_settings(
     request: AISettingsUpdate,
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    if request.model not in AI_MODEL_IDS:
-        raise HTTPException(status_code=422, detail="Эта модель OpenAI не поддерживается")
     row = get_or_create_ai_settings(db)
-    row.model = request.model
+    row.model = FIXED_AI_MODEL
     row.skill_prompt = request.skill_prompt.strip()
     if request.clear_api_key:
         row.api_key = None

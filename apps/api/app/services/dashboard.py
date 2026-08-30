@@ -18,6 +18,8 @@ from .excel_layouts import (
     technical_context_for_row,
 )
 from .weather import load_weather_context
+from .periods import period_from_filename
+from . import energy_catalog
 
 MONTHS = {
     "январ": (1, "Янв"),
@@ -68,6 +70,18 @@ def parse_period_start_from_filename(filename: str) -> date | None:
     return date(year, month, 1)
 
 
+def parse_period_start_from_batch(batch: ImportBatch) -> date | None:
+    return batch.period_start or period_from_filename(batch.original_filename)
+
+
+def period_info_from_batch(batch: ImportBatch) -> tuple[str, str, int, int] | None:
+    start = parse_period_start_from_batch(batch)
+    if start is None:
+        return None
+    label = next((label for month, label in MONTHS.values() if month == start.month), "")
+    return f"{start.year:04d}-{start.month:02d}", label, start.year, start.month
+
+
 def is_period_in_range(period_start: date | None, date_from: date | None, date_to: date | None) -> bool:
     if period_start is None:
         return True
@@ -88,12 +102,13 @@ def build_import_backed_dashboard(
         select(ImportBatch)
         .where(ImportBatch.dataset_kind == dataset_kind)
         .where(ImportBatch.status == ImportStatus.published)
+        .where(ImportBatch.is_active.is_(True))
         .order_by(ImportBatch.created_at.desc())
     ).all()
     filtered_batches = [
         batch
         for batch in batches
-        if is_period_in_range(parse_period_start_from_filename(batch.original_filename), date_from, date_to)
+        if is_period_in_range(parse_period_start_from_batch(batch), date_from, date_to)
     ]
 
     total_rows = sum(batch.accepted_rows for batch in filtered_batches)
@@ -254,6 +269,80 @@ def _controlled_supply_source(label: str) -> dict[str, str] | None:
     if _is_controlled_supply(label):
         return {"id": re.sub(r"[^a-zа-я0-9]+", "-", normalized).strip("-"), "name": label}
     return None
+
+
+def _daily_row_title(cells: list[object]) -> str | None:
+    """Detect a substation/RP title row on a daily sheet.
+
+    Title rows carry no meter reading (empty coefficient column) and hold the
+    substation name in one of the first four columns; the column position is
+    not consistent across sheets (see `данные/` samples), so all of them are
+    checked.
+    """
+    if _number(cells[4] if len(cells) > 4 else None) is not None:
+        return None
+    for index in range(min(4, len(cells))):
+        value = cells[index]
+        if not isinstance(value, str):
+            continue
+        candidate = " ".join(value.split())
+        if not candidate:
+            continue
+        normalized = candidate.casefold().replace("ё", "е")
+        if "итого" in normalized:
+            continue
+        if re.search(r"п/?с\b|\bрп\b", normalized):
+            return candidate
+    return None
+
+
+def _catalog_breakdown(raw_totals: dict[str, float]) -> tuple[list[dict[str, object]], int]:
+    """Resolve raw dynamic section titles onto the 10 canonical KOA points
+    plus the external line (docs/SMART_IMPLEMENTATION_PLAN.md, section 3.1).
+
+    Returns the breakdown list (10 catalog points, in catalog order, each
+    carrying its raw source titles for drill-down) plus how many of the 10
+    KOA points had at least one matching raw title with a positive value.
+    """
+    catalog_totals: dict[str, float] = defaultdict(float)
+    catalog_sources: dict[str, list[dict[str, object]]] = defaultdict(list)
+    unresolved_total = 0.0
+    unresolved_sources: list[dict[str, object]] = []
+    for raw_name, value in raw_totals.items():
+        point = energy_catalog.resolve_title(raw_name)
+        if point is None:
+            unresolved_total += value
+            unresolved_sources.append({"name": raw_name, "value": value})
+            continue
+        catalog_totals[point.id] += value
+        catalog_sources[point.id].append({"name": raw_name, "value": value})
+
+    resolved_koa_points = sum(
+        1 for point in energy_catalog.CATALOG_POINTS if catalog_totals.get(point.id, 0.0) > 0
+    )
+    breakdown = [
+        {
+            "id": point.id,
+            "name": point.name,
+            "site": point.site,
+            "value": catalog_totals.get(point.id, 0.0),
+            "resolved": point.id in catalog_totals,
+            "sources": sorted(catalog_sources.get(point.id, []), key=lambda item: item["value"], reverse=True),
+        }
+        for point in energy_catalog.ALL_POINTS
+    ]
+    if unresolved_sources:
+        breakdown.append(
+            {
+                "id": energy_catalog.UNRESOLVED_ID,
+                "name": energy_catalog.UNRESOLVED_NAME,
+                "site": "unknown",
+                "value": unresolved_total,
+                "resolved": False,
+                "sources": sorted(unresolved_sources, key=lambda item: item["value"], reverse=True),
+            }
+        )
+    return breakdown, resolved_koa_points
 
 
 def _is_daily_load_section_start(label: str) -> bool:
@@ -848,23 +937,30 @@ def _build_energy_forecast(
 
 
 def build_available_filters(db: Session) -> dict[str, object]:
-    published_batches = db.scalars(
+    # Eligibility matches the dashboard builders (ready_to_publish or
+    # published, active version) rather than only `published`, otherwise this
+    # endpoint stays empty while every dashboard already shows data.
+    eligible_batches = db.scalars(
         select(ImportBatch)
-        .where(ImportBatch.status == ImportStatus.published)
+        .where(ImportBatch.status.in_((ImportStatus.ready_to_publish, ImportStatus.published)))
+        .where(ImportBatch.is_active.is_(True))
         .order_by(ImportBatch.created_at.desc())
     ).all()
     periods: set[str] = set()
     dataset_kinds: set[str] = set()
-    for batch in published_batches:
+    periods_by_kind: dict[str, set[str]] = defaultdict(set)
+    for batch in eligible_batches:
         dataset_kinds.add(batch.dataset_kind.value)
-        period_info = _period_from_filename(batch.original_filename)
+        period_info = period_info_from_batch(batch)
         if period_info is not None:
             periods.add(period_info[0])
+            periods_by_kind[batch.dataset_kind.value].add(period_info[0])
 
     sorted_periods = sorted(periods)
     return {
         "dataset_kinds": sorted(dataset_kinds),
         "periods": sorted_periods,
+        "periods_by_kind": {kind: sorted(values) for kind, values in periods_by_kind.items()},
         "date_from": f"{sorted_periods[0]}-01" if sorted_periods else None,
         "date_to": f"{sorted_periods[-1]}-31" if sorted_periods else None,
         "stations": [],
@@ -888,11 +984,13 @@ def build_energy_business_dashboard(
         select(ImportBatch)
         .where(ImportBatch.dataset_kind == DatasetKind.technical_balance)
         .where(ImportBatch.status.in_(eligible_statuses))
+        .where(ImportBatch.is_active.is_(True))
     ).all()
     daily_batches = db.scalars(
         select(ImportBatch)
         .where(ImportBatch.dataset_kind == DatasetKind.daily_summary)
         .where(ImportBatch.status.in_(eligible_statuses))
+        .where(ImportBatch.is_active.is_(True))
     ).all()
 
     monthly_series: list[dict[str, object]] = []
@@ -900,11 +998,11 @@ def build_energy_business_dashboard(
     formula_mismatches = 0
 
     for batch in technical_batches:
-        period_info = _period_from_filename(batch.original_filename)
+        period_info = period_info_from_batch(batch)
         if period_info is None:
             continue
         period, month_label, _, _ = period_info
-        if not is_period_in_range(parse_period_start_from_filename(batch.original_filename), date_from, date_to):
+        if not is_period_in_range(parse_period_start_from_batch(batch), date_from, date_to):
             continue
 
         sheets = _rows_by_sheet(db, batch.id)
@@ -1060,7 +1158,7 @@ def build_energy_business_dashboard(
     negative_intervals = 0
     incomplete_intervals = 0
     for batch in daily_batches:
-        period_info = _period_from_filename(batch.original_filename)
+        period_info = period_info_from_batch(batch)
         if period_info is None:
             continue
         _, _, year, _ = period_info
@@ -1311,7 +1409,9 @@ def build_energy_business_dashboard(
     }
 
 
-def _latest_eligible_batch(db: Session, dataset_kind: DatasetKind) -> ImportBatch | None:
+def _latest_eligible_batch(
+    db: Session, dataset_kind: DatasetKind, period: str | None = None
+) -> ImportBatch | None:
     batches = db.scalars(
         select(ImportBatch)
         .where(ImportBatch.dataset_kind == dataset_kind)
@@ -1320,14 +1420,25 @@ def _latest_eligible_batch(db: Session, dataset_kind: DatasetKind) -> ImportBatc
     dated = [
         (period_info[0], batch)
         for batch in batches
-        if (period_info := _period_from_filename(batch.original_filename)) is not None
+        if (period_info := period_info_from_batch(batch)) is not None
     ]
+    if period:
+        matching = [item for item in dated if item[0] == period]
+        return max(matching, key=lambda item: item[1].created_at)[1] if matching else None
     return max(dated, key=lambda item: item[0])[1] if dated else None
 
 
-def build_technical_balance_dashboard(db: Session) -> dict[str, object]:
-    batch = _latest_eligible_batch(db, DatasetKind.technical_balance)
-    energy = build_energy_business_dashboard(db)
+def _period_bounds(period: str | None) -> tuple[date | None, date | None]:
+    if not period:
+        return None, None
+    year, month = (int(part) for part in period.split("-"))
+    return date(year, month, 1), date(year, month, _days_in_period(period))
+
+
+def build_technical_balance_dashboard(db: Session, period: str | None = None) -> dict[str, object]:
+    batch = _latest_eligible_batch(db, DatasetKind.technical_balance, period=period)
+    date_from, date_to = _period_bounds(period)
+    energy = build_energy_business_dashboard(db, date_from=date_from, date_to=date_to)
     if batch is None:
         return {
             "meta": {"dataset_kind": DatasetKind.technical_balance.value},
@@ -1342,6 +1453,7 @@ def build_technical_balance_dashboard(db: Session) -> dict[str, object]:
     main_rows = _technical_rows_from_sheets(_rows_by_sheet(db, batch.id))
     active_substation = None
     table: list[dict[str, object]] = []
+    seen_meters: dict[str, int] = {}
     for row, cells in main_rows:
         label = _label(cells)
         normalized = _normalized_label(cells)
@@ -1357,6 +1469,10 @@ def build_technical_balance_dashboard(db: Session) -> dict[str, object]:
             or normalized.startswith(("потери", "сторонние организации"))
         ):
             continue
+        first_row = seen_meters.get(meter_number) if meter_number else None
+        is_duplicate = first_row is not None
+        if meter_number and not is_duplicate:
+            seen_meters[meter_number] = row.row_index
         table.append(
             {
                 "id": f"technical-{row.row_index}-{_slug(meter_number or label)}",
@@ -1369,12 +1485,24 @@ def build_technical_balance_dashboard(db: Session) -> dict[str, object]:
                 "current": _number(cells[6] if len(cells) > 6 else None),
                 "value": value,
                 "substation": active_substation,
+                "is_duplicate": is_duplicate,
+                "duplicate_of_row": first_row,
             }
         )
 
+    # A physical meter re-listed later in the workbook (e.g. a recap section
+    # near "ИТОГО общее потребление") must count once toward totals; later
+    # occurrences stay visible in `table` for lineage but are excluded here.
+    counted_rows = [item for item in table if not item["is_duplicate"]]
     ranked = sorted(table, key=lambda item: abs(float(item["value"])), reverse=True)
+    substation_totals: dict[str, float] = defaultdict(float)
+    for item in counted_rows:
+        substation = item.get("substation")
+        if substation:
+            substation_totals[str(substation)] += float(item["value"])
+    catalog_breakdown, catalog_resolved = _catalog_breakdown(substation_totals)
     kpis = energy.get("kpis") or {}
-    period_info = _period_from_filename(batch.original_filename)
+    period_info = period_info_from_batch(batch)
     return {
         "meta": {
             "dataset_kind": DatasetKind.technical_balance.value,
@@ -1387,20 +1515,23 @@ def build_technical_balance_dashboard(db: Session) -> dict[str, object]:
             "own_kwh": kpis.get("own_kwh", 0),
             "external_kwh": kpis.get("external_kwh", 0),
             "objects": len(table),
+            "duplicate_meter_rows": len(table) - len(counted_rows),
+            "catalog_points_resolved": catalog_resolved,
+            "catalog_points_total": len(energy_catalog.CATALOG_POINTS),
         },
         "series": [
             {"name": item["name"], "value": item["value"], "substation": item["substation"]}
             for item in ranked[:30]
         ],
-        "breakdowns": energy.get("external_substations") or [],
+        "breakdowns": catalog_breakdown,
         "table": ranked,
         "insight": "Показания пересчитаны независимо по коэффициенту каждого прибора учёта.",
         "warnings": energy.get("warnings") or [],
     }
 
 
-def build_daily_consumption_dashboard(db: Session) -> dict[str, object]:
-    batch = _latest_eligible_batch(db, DatasetKind.daily_summary)
+def build_daily_consumption_dashboard(db: Session, period: str | None = None) -> dict[str, object]:
+    batch = _latest_eligible_batch(db, DatasetKind.daily_summary, period=period)
     if batch is None:
         return {
             "meta": {"dataset_kind": DatasetKind.daily_summary.value},
@@ -1415,8 +1546,8 @@ def build_daily_consumption_dashboard(db: Session) -> dict[str, object]:
     loads: dict[str, dict[str, object]] = {}
     daily_totals: list[dict[str, object]] = []
     sheets = _rows_by_sheet(db, batch.id)
-    period_info = _period_from_filename(batch.original_filename)
-    period = period_info[0] if period_info else None
+    period_info = period_info_from_batch(batch)
+    resolved_period = period_info[0] if period_info else None
     for sheet_name, rows in sheets.items():
         controlled_total = 0.0
         in_load_section = False
@@ -1424,6 +1555,10 @@ def build_daily_consumption_dashboard(db: Session) -> dict[str, object]:
         for _, cells in rows:
             label = _label(cells)
             meter_number = _normalize_meter_number(cells[2] if len(cells) > 2 else None)
+            title = _daily_row_title(cells)
+            if title:
+                active_substation = title
+                continue
             if _is_daily_load_section_end(label):
                 in_load_section = False
                 continue
@@ -1456,20 +1591,24 @@ def build_daily_consumption_dashboard(db: Session) -> dict[str, object]:
     table = sorted(loads.values(), key=lambda item: float(item["value"]), reverse=True)
     substation_totals: dict[str, float] = defaultdict(float)
     for item in table:
-        substation_totals[str(item["substation"])] += float(item["value"])
+        if item.get("substation"):
+            substation_totals[str(item["substation"])] += float(item["value"])
+    catalog_breakdown, catalog_resolved = _catalog_breakdown(substation_totals)
     peak = max(daily_totals, key=lambda item: float(item["value"]), default=None)
     return {
         "meta": {
             "dataset_kind": DatasetKind.daily_summary.value,
             "batch_id": batch.id,
             "filename": batch.original_filename,
-            "period": period,
+            "period": resolved_period,
         },
         "kpis": {
             "days": len(sheets),
             "objects": len(table),
             "total_kwh": sum(float(item["value"]) for item in table),
             "peak_day": peak,
+            "catalog_points_resolved": catalog_resolved,
+            "catalog_points_total": len(energy_catalog.CATALOG_POINTS),
         },
         "series": [
             {
@@ -1482,10 +1621,7 @@ def build_daily_consumption_dashboard(db: Session) -> dict[str, object]:
             }
             for item in table[:30]
         ],
-        "breakdowns": [
-            {"name": name, "value": value}
-            for name, value in sorted(substation_totals.items(), key=lambda item: item[1], reverse=True)
-        ],
+        "breakdowns": catalog_breakdown,
         "table": table,
         "insight": "Счётчики ранжированы по суммарному расходу за последний загруженный месяц.",
         "warnings": [],

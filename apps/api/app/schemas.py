@@ -48,6 +48,13 @@ class ImportBatchRead(BaseModel):
     warning_count: int
     error_count: int
     published_at: datetime | None
+    period_start: date | None
+    period_end: date | None
+    period_source: str | None
+    content_fingerprint: str | None
+    supersedes_batch_id: int | None
+    superseded_at: datetime | None
+    is_active: bool
     created_at: datetime
     updated_at: datetime
     files: list[ImportFileRead] = []
@@ -122,13 +129,11 @@ class AISettingsRead(BaseModel):
     skill_prompt: str
     has_api_key: bool
     masked_api_key: str | None = None
-    models: list[dict[str, str]]
 
 
 class AISettingsUpdate(BaseModel):
     api_key: str | None = Field(default=None, max_length=512)
     clear_api_key: bool = False
-    model: str
     skill_prompt: str = Field(min_length=20, max_length=8000)
 
 

@@ -113,18 +113,7 @@ DEFAULT_SKILL_PROMPT = f"""Роль: ведущий энергоаналитик
 Формат: вывод, подтверждающие цифры, существенная оговорка и следующее действие.
 Если доказательств недостаточно, точно назови недостающую метрику или период."""
 
-AI_MODELS = [
-    {"id": "gpt-4o", "label": "GPT-4o", "hint": "быстрый универсальный"},
-    {"id": "gpt-4.1", "label": "GPT-4.1", "hint": "точное следование инструкциям"},
-    {"id": "gpt-4.1-mini", "label": "GPT-4.1 mini", "hint": "экономичный анализ"},
-    {"id": "gpt-5", "label": "GPT-5", "hint": "глубокий анализ"},
-    {"id": "gpt-5-mini", "label": "GPT-5 mini", "hint": "быстрый анализ"},
-    {"id": "gpt-5.1", "label": "GPT-5.1", "hint": "улучшенное рассуждение"},
-    {"id": "gpt-5.2", "label": "GPT-5.2", "hint": "сложные данные"},
-    {"id": "gpt-5.4-mini", "label": "GPT-5.4 mini", "hint": "баланс цены и качества"},
-    {"id": "gpt-5.4", "label": "GPT-5.4", "hint": "максимальное качество до 5.4"},
-]
-AI_MODEL_IDS = {item["id"] for item in AI_MODELS}
+FIXED_AI_MODEL = "gpt-5.4"
 
 
 class InsightSignal(BaseModel):
@@ -184,15 +173,22 @@ class OverviewForecastBrief(BaseModel):
 def get_or_create_ai_settings(db: Session) -> AISettings:
     row = db.get(AISettings, 1)
     if row is None:
-        row = AISettings(id=1, model="gpt-5.4", skill_prompt=DEFAULT_SKILL_PROMPT)
+        row = AISettings(id=1, model=FIXED_AI_MODEL, skill_prompt=DEFAULT_SKILL_PROMPT)
         db.add(row)
         db.commit()
         db.refresh(row)
-    elif row.skill_prompt.strip() == LEGACY_DEFAULT_SKILL_PROMPT.strip():
-        row.skill_prompt = DEFAULT_SKILL_PROMPT
-        db.add(row)
-        db.commit()
-        db.refresh(row)
+    else:
+        dirty = False
+        if row.model != FIXED_AI_MODEL:
+            row.model = FIXED_AI_MODEL
+            dirty = True
+        if row.skill_prompt.strip() == LEGACY_DEFAULT_SKILL_PROMPT.strip():
+            row.skill_prompt = DEFAULT_SKILL_PROMPT
+            dirty = True
+        if dirty:
+            db.add(row)
+            db.commit()
+            db.refresh(row)
     return row
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import json
 from decimal import Decimal, InvalidOperation
@@ -13,6 +14,7 @@ from .excel_layouts import (
     detect_workbook_kind,
     technical_layout_issues,
 )
+from .periods import infer_workbook_period
 
 try:
     import openpyxl
@@ -47,6 +49,10 @@ class ParsedWorkbook:
     total_sheets: int
     rows: list[ParsedRow]
     issues: list[ParsedIssue]
+    period_start: object = None
+    period_end: object = None
+    period_source: str | None = None
+    content_fingerprint: str | None = None
 
 
 def _normalize_decimal_text(value: str) -> str | None:
@@ -78,11 +84,11 @@ def _normalize_row_values(values: list[object]) -> list[object]:
 def parse_file(filename: str, payload: bytes) -> ParsedWorkbook:
     suffix = Path(filename).suffix.lower()
     if suffix == ".csv":
-        return _parse_csv(payload)
+        return _add_metadata(filename, _parse_csv(payload))
     if suffix == ".xlsx":
-        return _parse_xlsx(payload)
+        return _add_metadata(filename, _parse_xlsx(payload))
     if suffix == ".xls":
-        return _parse_xls(payload)
+        return _add_metadata(filename, _parse_xls(payload))
     return ParsedWorkbook(
         dataset_kind=DatasetKind.unknown,
         total_sheets=0,
@@ -95,6 +101,27 @@ def parse_file(filename: str, payload: bytes) -> ParsedWorkbook:
             )
         ],
     )
+
+
+def _add_metadata(filename: str, parsed: ParsedWorkbook) -> ParsedWorkbook:
+    rows_by_sheet: dict[str, list[list[object]]] = {}
+    for row in parsed.rows:
+        rows_by_sheet.setdefault(row.sheet_name, []).append(json.loads(row.raw_json))
+    start, end, source, period_issues = infer_workbook_period(parsed.dataset_kind, filename, rows_by_sheet)
+    parsed.issues.extend(
+        ParsedIssue(ValidationSeverity.warning, code, message, sheet_name, row_index)
+        for code, message, sheet_name, row_index in period_issues
+    )
+    digest = hashlib.sha256(parsed.dataset_kind.value.encode())
+    for row in parsed.rows:
+        digest.update(row.sheet_name.encode())
+        digest.update(str(row.row_index).encode())
+        digest.update(row.raw_json.encode())
+    parsed.period_start = start
+    parsed.period_end = end
+    parsed.period_source = source
+    parsed.content_fingerprint = digest.hexdigest()
+    return parsed
 
 
 def _detect_dataset_kind(sheet_names: list[str], rows: list[ParsedRow]) -> DatasetKind:

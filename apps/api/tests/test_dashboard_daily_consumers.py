@@ -70,6 +70,23 @@ class DailyConsumerExtractionTests(unittest.TestCase):
             "Node A",
         )
 
+    def test_excel_layout_resolves_dynamic_technical_context_titles(self) -> None:
+        technical_rows = [
+            (SimpleNamespace(row_index=56), ['ПС 35/6 "Северная"']),
+            (SimpleNamespace(row_index=57), ["Линия 6кВ Север-1", "ARTM", "1001", None, 10, 1, 2, "=H"]),
+            (SimpleNamespace(row_index=92), ['РП -1 6кВ "ЦППНГ"']),
+            (SimpleNamespace(row_index=93), ["Яч.104 РП-1-1", "ARTM", "1002", None, 20, 2, 4, "=H"]),
+        ]
+
+        self.assertEqual(
+            technical_context_for_row(57, technical_rows),
+            'ПС 35/6 "Северная"',
+        )
+        self.assertEqual(
+            technical_context_for_row(93, technical_rows),
+            'РП -1 6кВ "ЦППНГ"',
+        )
+
     def test_forecast_can_use_daily_history_without_technical_balance(self) -> None:
         start = date(2026, 1, 1)
         points = [
