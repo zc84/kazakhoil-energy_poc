@@ -246,6 +246,41 @@ def _technical_rows_from_sheets(
     return select_technical_sheet(sheets)
 
 
+def _technical_financial_summary(
+    rows: list[tuple[StagingRow, list[object]]],
+) -> list[dict[str, object]]:
+    summary: list[dict[str, object]] = []
+    empty_rows_after_start = 0
+    previous_row_index: int | None = None
+    for row, cells in rows:
+        if row.row_index < 4:
+            continue
+        if previous_row_index is not None and row.row_index > previous_row_index + 1:
+            empty_rows_after_start += row.row_index - previous_row_index - 1
+            if empty_rows_after_start >= 5:
+                break
+        previous_row_index = row.row_index
+        name = str(cells[12]).strip() if len(cells) > 12 and cells[12] not in (None, "") else ""
+        value = _number(cells[13] if len(cells) > 13 else None)
+        if not name and value is None:
+            empty_rows_after_start += 1
+            if empty_rows_after_start >= 5:
+                break
+            continue
+        empty_rows_after_start = 0
+        if not name or value is None:
+            continue
+        summary.append(
+            {
+                "id": f"financial-{row.row_index}-{_slug(name)}",
+                "row": row.row_index,
+                "name": name,
+                "value": value,
+            }
+        )
+    return summary
+
+
 def _external_rows_from_sheets(
     sheets: dict[str, list[tuple[StagingRow, list[object]]]],
     technical_rows: list[tuple[StagingRow, list[object]]],
@@ -1460,6 +1495,7 @@ def build_technical_balance_dashboard(db: Session, period: str | None = None) ->
         }
 
     main_rows = _technical_rows_from_sheets(_rows_by_sheet(db, batch.id))
+    financial_summary = _technical_financial_summary(main_rows)
     active_substation = None
     table: list[dict[str, object]] = []
     seen_meters: dict[str, int] = {}
@@ -1536,6 +1572,7 @@ def build_technical_balance_dashboard(db: Session, period: str | None = None) ->
             for item in ranked[:30]
         ],
         "breakdowns": catalog_breakdown,
+        "financial_summary": financial_summary,
         "table": ranked,
         "insight": "Показания пересчитаны независимо по коэффициенту каждого прибора учёта.",
         "warnings": energy.get("warnings") or [],

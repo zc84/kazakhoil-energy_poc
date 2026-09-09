@@ -1393,6 +1393,7 @@ function SourceDashboard({ kind, hasImports, onOpenQuality }) {
       name: item.meter_number ? `№ ${item.meter_number}` : item.name,
     }))
   const visibleBreakdowns = result.breakdowns || []
+  const financialSummary = isTechnical ? (result.financial_summary || []) : []
   const catalogResolved = kpis.catalog_points_resolved
   const catalogTotal = kpis.catalog_points_total
   const pointOptions = visibleBreakdowns.filter(item => (item.sources || []).length > 0)
@@ -1473,7 +1474,7 @@ function SourceDashboard({ kind, hasImports, onOpenQuality }) {
         </div>
         <p className="catalog-breakdown-note">
           Значения в кВт·ч, не проценты от общего входа: точка и её дочерние линии/счётчики считаются вместе,
-          поэтому суммировать доли между точками нельзя (см. план раздела 3.3).
+          поэтому суммировать доли между точками нельзя.
         </p>
         <div className="energy-composition-summary external-groups-legend">
           {visibleBreakdowns.map((item, index) => <div key={item.id || item.name} className={item.resolved === false ? 'catalog-unresolved' : ''}>
@@ -1483,6 +1484,18 @@ function SourceDashboard({ kind, hasImports, onOpenQuality }) {
           </div>)}
         </div>
       </Card>
+      {isTechnical && financialSummary.length > 0 && <Card
+        className="span-12"
+        title="Финаналитика"
+      >
+        <div className="data-table financial-summary-table">
+          <div className="tr th"><span>Наименование объектов</span><span>Расход</span></div>
+          {financialSummary.map(item => <div className="tr" key={item.id}>
+            <span className="file-name financial-summary-name">{item.name}</span>
+            <span>{fmt(item.value)} кВт·ч</span>
+          </div>)}
+        </div>
+      </Card>}
       <Card
         className="span-12"
         title={isTechnical ? 'Таблица объектов' : 'Таблица потребления'}

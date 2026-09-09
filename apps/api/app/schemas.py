@@ -119,6 +119,7 @@ class DashboardRead(BaseModel):
     kpis: dict[str, object]
     series: list[dict[str, object]]
     breakdowns: list[dict[str, object]]
+    financial_summary: list[dict[str, object]] = Field(default_factory=list)
     table: list[dict[str, object]]
     insight: str
     warnings: list[str]

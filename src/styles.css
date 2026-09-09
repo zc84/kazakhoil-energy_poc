@@ -873,6 +873,9 @@ a.export { text-decoration:none }
 .source-table-search input::placeholder { color:var(--muted) }
 .source-dashboard-table { max-height:620px; overflow:auto; margin:4px -18px -17px }
 .source-dashboard-table .tr { min-width:850px; grid-template-columns:minmax(240px,1.6fr) 120px minmax(190px,1fr) 130px 90px }
+.financial-summary-table { max-height:520px; overflow:auto; margin:4px -18px -17px }
+.financial-summary-table .tr { min-width:680px; grid-template-columns:minmax(360px,1fr) 170px }
+.financial-summary-name { font-size:12px; font-weight:800; line-height:1.35 }
 .source-meter-cell { align-items:flex-start!important; flex-direction:column; gap:3px!important }
 .source-meter-cell b { font-size:9px }
 .source-meter-cell small { color:var(--muted); font-size:7px; line-height:1.3 }

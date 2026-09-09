@@ -83,6 +83,30 @@ class DashboardEndpointTests(unittest.TestCase):
                 StagingRow(
                     batch_id=technical.id,
                     sheet_name="Тех.Учёт",
+                    row_index=4,
+                    raw_json=json.dumps([None] * 12 + ["ИТОГО - КОА", 5206021.8]),
+                ),
+                StagingRow(
+                    batch_id=technical.id,
+                    sheet_name="Тех.Учёт",
+                    row_index=7,
+                    raw_json=json.dumps([None] * 12 + ["скважины, АГЗУ, ТБО", 29498.2]),
+                ),
+                StagingRow(
+                    batch_id=technical.id,
+                    sheet_name="Тех.Учёт",
+                    row_index=12,
+                    raw_json=json.dumps([None] * 12 + ["ППН, УДН тыс.кВт.ч.", 214044.48]),
+                ),
+                StagingRow(
+                    batch_id=technical.id,
+                    sheet_name="Тех.Учёт",
+                    row_index=294,
+                    raw_json=json.dumps([None] * 12 + ['Месторождение "Кожасай" тыс.кВт.ч., в том числе:', 599460.12]),
+                ),
+                StagingRow(
+                    batch_id=technical.id,
+                    sheet_name="Тех.Учёт",
                     row_index=56,
                     raw_json=json.dumps(['ПС 35/6 "Северная"']),
                 ),
@@ -159,6 +183,15 @@ class DashboardEndpointTests(unittest.TestCase):
         self.assertIn({"name": 'ПС 35/6 "Северная"', "value": 30.0}, sever_point["sources"])
         self.assertEqual(payload["kpis"]["catalog_points_total"], 10)
         self.assertEqual(payload["kpis"]["catalog_points_resolved"], 1)
+        self.assertEqual(
+            payload["financial_summary"][:3],
+            [
+                {"id": "financial-4-итого-коа", "row": 4, "name": "ИТОГО - КОА", "value": 5206021.8},
+                {"id": "financial-7-скважины-агзу-тбо", "row": 7, "name": "скважины, АГЗУ, ТБО", "value": 29498.2},
+                {"id": "financial-12-ппн-удн-тыс-квт-ч", "row": 12, "name": "ППН, УДН тыс.кВт.ч.", "value": 214044.48},
+            ],
+        )
+        self.assertNotIn(294, {item["row"] for item in payload["financial_summary"]})
 
     def test_technical_balance_deduplicates_repeated_meter_rows(self) -> None:
         with self.Session() as db:
