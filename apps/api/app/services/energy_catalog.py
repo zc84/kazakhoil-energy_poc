@@ -95,7 +95,11 @@ def resolve_title_against(points: list[EnergyPoint], title: str) -> EnergyPoint 
     if not normalized:
         return None
     for point in points:
+        point_name = normalize_title(point.name)
+        if point_name and point_name in normalized:
+            return point
         for alias in point.aliases:
-            if alias.alias in normalized:
+            normalized_alias = normalize_title(alias.alias)
+            if normalized_alias and normalized_alias in normalized:
                 return point
     return None

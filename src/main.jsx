@@ -1947,17 +1947,36 @@ function PeaksAndAnomaliesPage({ hasImports }) {
       external: Number(item.external_share ?? 0),
     }]),
   )
-  const segmentShare = (period) => {
-    if (segment === 'all') return 1
+  const segmentShare = (period, segmentId = segment) => {
+    if (segmentId === 'all') return 1
     const share = shareByPeriod.get(String(period))
-    if (!share) return segment === 'koa' ? 1 : 0
-    return segment === 'koa' ? share.own : share.external
+    if (!share) return segmentId === 'koa' ? 1 : 0
+    return segmentId === 'koa' ? share.own : share.external
   }
-  const filteredDailySeries = periodDailySeries.map(item => ({
-    ...item,
-    value: stationValue(item) * segmentShare(item.period || String(item.date || '').slice(0, 7)),
-  }))
+  const seriesForSegment = segmentId => periodDailySeries.map(item => {
+    const period = item.period || String(item.date || '').slice(0, 7)
+    return {
+      ...item,
+      value: stationValue(item) * segmentShare(period, segmentId),
+    }
+  })
+  const segmentDailySeries = {
+    all: seriesForSegment('all'),
+    koa: seriesForSegment('koa'),
+    external: seriesForSegment('external'),
+  }
+  const filteredDailySeries = segmentDailySeries[segment] || segmentDailySeries.all
   const dailySignals = buildDailySignals(filteredDailySeries)
+  const peakThresholdSplit = [
+    { id: 'koa', label: 'ТОО Казахойл Актобе', series: segmentDailySeries.koa },
+    { id: 'external', label: 'Субпотребители', series: segmentDailySeries.external },
+  ].map(item => {
+    const signals = buildDailySignals(item.series)
+    const peak = item.series.length
+      ? item.series.reduce((max, current) => Number(current.value || 0) > Number(max.value || 0) ? current : max, item.series[0])
+      : null
+    return { ...item, signals, peak }
+  })
   const coveredPeriods = Array.from(new Set(filteredDailySeries.map(item => item.period || String(item.date || '').slice(0, 7))))
   const expectedDays = coveredPeriods.reduce((sum, period) => sum + daysInPeriod(period), 0)
   const coveragePercent = expectedDays ? filteredDailySeries.length / expectedDays : null
@@ -2032,27 +2051,35 @@ function PeaksAndAnomaliesPage({ hasImports }) {
       </article>
       <article className="peak-signal-secondary">
         <small>РЕЗКИЕ ИЗМЕНЕНИЯ</small>
-        <div className="peak-signal-value"><b>{fmt(dailySignals.events.length)}</b><strong>событий</strong></div>
+        <div className="peak-signal-value centered"><b>{fmt(dailySignals.events.length)}</b><strong>событий</strong></div>
         <div className="peak-change-breakdown">
           <span className="rise"><TrendingUp/><em>Рост</em><b>{riseCount}</b></span>
           <span className="fall"><TrendingDown/><em>Спад</em><b>{fallCount}</b></span>
+          <span className="average"><Gauge/><em>Среднее за день</em><b>{fmt(dailySignals.average)}</b><strong>кВт·ч</strong></span>
         </div>
       </article>
       <article className="peak-signal-secondary">
         <small>ПОРОГ ПИКОВОГО ДНЯ</small>
-        <div className="peak-signal-value"><b>{fmt(dailySignals.controlLimit)}</b><strong>кВт·ч</strong></div>
-        <p>дни выше этого уровня считаются пиковыми</p>
+        <div className="peak-threshold-split">
+          {peakThresholdSplit.map(item => <div key={item.id}>
+            <span>{item.label}</span>
+            <b>{fmt(item.signals.controlLimit)}</b>
+            <strong>кВт·ч</strong>
+            <em>пик {fmt(item.peak?.value)} кВт·ч · {dateLabel(item.peak?.date)}</em>
+          </div>)}
+        </div>
+        <p>пороги рассчитаны отдельно для КОА и субпотребителей</p>
       </article>
       <article
         className={`peak-signal-secondary data-completeness ${attentionCount ? 'attention' : ''}`}
-        title={`Загружено дневных строк: ${fmt(filteredDailySeries.length)} из ${fmt(expectedDays)} ожидаемых по календарю выбранного периода (${coveredPeriods.filter(Boolean).map(fmtMonthYear).join(', ') || '—'}).`}
+        title={`Данные есть за ${fmt(filteredDailySeries.length)} из ${fmt(expectedDays)} календарных дней выбранного периода (${coveredPeriods.filter(Boolean).map(fmtMonthYear).join(', ') || '—'}). Если загружены не все дни, часть пиков могла не попасть в расчет. Проблемные записи: ${fmt(attentionCount)}; отрицательные значения: ${fmt(qualityKpis.negative_intervals)}; неполные интервалы: ${fmt(qualityKpis.incomplete_intervals)}.`}
       >
         <small>ПОЛНОТА ДНЕВНЫХ ДАННЫХ</small>
         <div className="peak-signal-value">
           <b>{fmt(filteredDailySeries.length)}{expectedDays ? ` / ${fmt(expectedDays)}` : ''}</b>
           <strong>{coveragePercent != null ? `${(coveragePercent * 100).toFixed(0)}%` : 'дней'}</strong>
         </div>
-        <p>факт/ожидание по календарю · {fmt(attentionCount)} замечаний · отрицательные: {fmt(qualityKpis.negative_intervals)} · неполные: {fmt(qualityKpis.incomplete_intervals)}</p>
+        <p>данные есть за {fmt(filteredDailySeries.length)} из {fmt(expectedDays)} календарных дней; если дней меньше, часть пиков могла не попасть в расчёт</p>
       </article>
     </section>
     <Card
@@ -2248,9 +2275,8 @@ function ForecastChartLegend() {
   </div>
 }
 
-function ForecastPage({ hasImports, consumersState, mappings, forecastReady, onOpenConsumers, onOpenUpload }) {
+function ForecastPage({ hasImports, forecastReady, onOpenUpload }) {
   const [result, setResult] = useState(null)
-  const [selectedConsumerIds, setSelectedConsumerIds] = useState([])
   const [fullscreenChart, setFullscreenChart] = useState(false)
   const [adjustments, setAdjustments] = useState(() => {
     try {
@@ -2270,28 +2296,6 @@ function ForecastPage({ hasImports, consumersState, mappings, forecastReady, onO
   const [tariffKzt, setTariffKzt] = useState(() => localStorage.getItem('energy-forecast-tariff-kzt') || '')
   const [loading, setLoading] = useState(hasImports)
   const [error, setError] = useState('')
-  const consumers = consumersState.consumers || []
-  const unmappedConsumers = consumers.filter(item => !mappingForConsumer(mappings, item))
-  const selectedConsumers = selectedConsumerIds.length
-    ? consumers.filter(item => selectedConsumerIds.includes(item.id))
-    : consumers
-  const weatherLocations = Array.from(selectedConsumers
-    .reduce((byRegion, item) => {
-      const region = WEATHER_REGIONS.find(candidate => candidate.id === mappingForConsumer(mappings, item))
-      if (!region) return byRegion
-      const current = byRegion.get(region.id) || {
-        id: region.id,
-        name: region.name,
-        latitude: region.latitude,
-        longitude: region.longitude,
-        timezone: region.timezone,
-        weight: 0,
-      }
-      current.weight += Number(item.value || 0)
-      byRegion.set(region.id, current)
-      return byRegion
-    }, new Map())
-    .values())
 
   useEffect(() => {
     if (!fullscreenChart) return
@@ -2325,7 +2329,7 @@ function ForecastPage({ hasImports, consumersState, mappings, forecastReady, onO
         const response = await apiFetch('/api/v1/forecasts/energy', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ adjustments, weather_locations: weatherLocations }),
+          body: JSON.stringify({ adjustments, weather_locations: [] }),
         })
         if (!response.ok) throw new Error(await readApiError(response))
         const data = await parseJsonResponse(response)
@@ -2340,7 +2344,7 @@ function ForecastPage({ hasImports, consumersState, mappings, forecastReady, onO
     return () => {
       active = false
     }
-  }, [hasImports, forecastReady, adjustments, selectedConsumerIds, mappings, consumers])
+  }, [hasImports, forecastReady, adjustments])
 
   useEffect(() => {
     if (!result?.period || draft.start_date) return
@@ -2363,19 +2367,14 @@ function ForecastPage({ hasImports, consumersState, mappings, forecastReady, onO
     if (consumersState.loading && !consumers.length) {
       return <div className="result-loading"><span/><b>Проверяем готовность данных для прогноза…</b></div>
     }
-    const mappedCount = consumers.length - unmappedConsumers.length
-    return <Card title="Подготовка прогноза" subtitle="Погодные регионы нужны для корректной температурной поправки">
+    return <Card title="Подготовка прогноза" subtitle="Нужна история потребления ТОО">
       <div className="forecast-locked">
         <MapPin/>
         <div>
-          <b>Осталось назначить погодные регионы</b>
-          <p>Готово {mappedCount} из {consumers.length || 0}. Назначьте регион оставшимся потребителям — прогноз сформируется автоматически.</p>
-          {!!unmappedConsumers.length && <ul>
-            {unmappedConsumers.slice(0, 5).map(item => <li key={item.id}>{item.name}</li>)}
-            {unmappedConsumers.length > 5 && <li>и ещё {unmappedConsumers.length - 5}</li>}
-          </ul>}
+          <b>Недостаточно данных для прогноза ТОО</b>
+          <p>Нужен технический баланс или ежедневная сводка с распознанным периодом. Регионы субпотребителей больше не блокируют прогноз покупки Компании.</p>
         </div>
-        <button type="button" onClick={onOpenConsumers}>Перейти к потребителям <ArrowRight/></button>
+        <button type="button" onClick={onOpenUpload}>Загрузить данные <ArrowRight/></button>
       </div>
     </Card>
   }
@@ -2416,33 +2415,31 @@ function ForecastPage({ hasImports, consumersState, mappings, forecastReady, onO
     }, {})
     return `${parts.year}-${parts.month}-${parts.day}`
   }
-  const selectedConsumerValue = selectedConsumerIds.length
-    ? selectedConsumers.reduce((sum, item) => sum + Number(item.value || 0), 0)
-    : 0
-  const consumerScale = selectedConsumerIds.length && Number(rawForecast.source_total_kwh || 0) > 0
-    ? selectedConsumerValue / Number(rawForecast.source_total_kwh || 0)
-    : 1
   const scalePoint = item => ({
     ...item,
-    actual: item.actual == null ? item.actual : Number(item.actual) * consumerScale,
-    value: item.value == null ? item.value : Number(item.value) * consumerScale,
-    lower: item.lower == null ? item.lower : Number(item.lower) * consumerScale,
-    upper: item.upper == null ? item.upper : Number(item.upper) * consumerScale,
-    weather_delta_kwh: Number(item.weather_delta_kwh || 0) * consumerScale,
-    event_delta_kwh: Number(item.event_delta_kwh || 0) * consumerScale,
-    cumulative: item.cumulative == null ? item.cumulative : Number(item.cumulative) * consumerScale,
+    actual: item.actual == null ? item.actual : Number(item.actual),
+    value: item.value == null ? item.value : Number(item.value),
+    lower: item.lower == null ? item.lower : Number(item.lower),
+    upper: item.upper == null ? item.upper : Number(item.upper),
+    weather_delta_kwh: Number(item.weather_delta_kwh || 0),
+    event_delta_kwh: Number(item.event_delta_kwh || 0),
+    cumulative: item.cumulative == null ? item.cumulative : Number(item.cumulative),
   })
   const forecast = {
     ...rawForecast,
-    source_total_kwh: Number(rawForecast.source_total_kwh || 0) * consumerScale,
-    forecast_total_kwh: Number(rawForecast.forecast_total_kwh || 0) * consumerScale,
-    forecast_low_kwh: Number(rawForecast.forecast_low_kwh || 0) * consumerScale,
-    forecast_high_kwh: Number(rawForecast.forecast_high_kwh || 0) * consumerScale,
-    weather_effect_kwh: Number(rawForecast.weather_effect_kwh || 0) * consumerScale,
-    event_effect_kwh: Number(rawForecast.event_effect_kwh || 0) * consumerScale,
-    segments: (rawForecast.segments || []).map(item => ({ ...item, value: Number(item.value || 0) * consumerScale })),
-    substations: (rawForecast.substations || []).map(item => ({ ...item, forecast_kwh: Number(item.forecast_kwh || 0) * consumerScale })),
-    scenarios: (rawForecast.scenarios || []).map(item => ({ ...item, value: Number(item.value || 0) * consumerScale })),
+    source_total_kwh: Number(rawForecast.source_total_kwh || 0),
+    source_controlled_total_kwh: Number(rawForecast.source_controlled_total_kwh || rawForecast.source_total_kwh || 0),
+    source_external_kwh: Number(rawForecast.source_external_kwh || 0),
+    forecast_total_kwh: Number(rawForecast.forecast_total_kwh || 0),
+    forecast_low_kwh: Number(rawForecast.forecast_low_kwh || 0),
+    forecast_high_kwh: Number(rawForecast.forecast_high_kwh || 0),
+    controlled_forecast_total_kwh: Number(rawForecast.controlled_forecast_total_kwh || rawForecast.forecast_total_kwh || 0),
+    weather_effect_kwh: Number(rawForecast.weather_effect_kwh || 0),
+    event_effect_kwh: Number(rawForecast.event_effect_kwh || 0),
+    segments: (rawForecast.segments || []).map(item => ({ ...item, value: Number(item.value || 0) })),
+    forecast_stations: (rawForecast.forecast_stations || []).map(item => ({ ...item, value: Number(item.value || 0) })),
+    substations: (rawForecast.substations || []).map(item => ({ ...item, forecast_kwh: Number(item.forecast_kwh || 0) })),
+    scenarios: (rawForecast.scenarios || []).map(item => ({ ...item, value: Number(item.value || 0) })),
     series: (rawForecast.series || []).map(scalePoint),
     combined_series: (rawForecast.combined_series || rawForecast.series || []).map(scalePoint),
   }
@@ -2456,14 +2453,6 @@ function ForecastPage({ hasImports, consumersState, mappings, forecastReady, onO
   const hasDailyProfile = Number(forecast.source_days || 0) > 0 && combinedSeries.some(item => item.phase === 'actual')
   const totalWeatherAnomalies = Number(forecast.weather?.history_anomaly_days || 0) + Number(forecast.weather?.anomaly_days || 0)
   const signedEnergy = value => `${Number(value || 0) >= 0 ? '+' : '−'}${mln(Math.abs(Number(value || 0)))}`
-  const selectedConsumerLabel = selectedConsumerIds.length
-    ? `${selectedConsumerIds.length} потребителей · ${mln(selectedConsumerValue)} млн кВт·ч`
-    : 'Всё потребление'
-  const toggleConsumer = consumerId => {
-    setSelectedConsumerIds(current => current.includes(consumerId)
-      ? current.filter(id => id !== consumerId)
-      : [...current, consumerId])
-  }
   const addAdjustment = event => {
     event.preventDefault()
     const capacity = Number(draft.capacity_kw)
@@ -2508,7 +2497,7 @@ function ForecastPage({ hasImports, consumersState, mappings, forecastReady, onO
   const forecastCost = forecast.forecast_total_kwh * (hasTariff ? tariff : 0)
   const sourceCost = forecast.source_total_kwh * (hasTariff ? tariff : 0)
   const costDelta = forecastCost - sourceCost
-  const forecastTimezone = weatherLocations[0]?.timezone || 'Asia/Aqtobe'
+  const forecastTimezone = forecast.weather?.location?.timezone || 'Asia/Aqtobe'
   const todayIso = dateKeyInTimezone(forecastTimezone)
   const forecastStartIso = forecast.period ? `${forecast.period}-01` : ''
   const planDays = forecast.period
@@ -2553,7 +2542,7 @@ function ForecastPage({ hasImports, consumersState, mappings, forecastReady, onO
   return <div className="forecast-page">
     <section className="forecast-command">
       <div className="forecast-command-main">
-        <div className="forecast-live"><i/> ПРОГНОЗ ГОТОВ <span>·</span> {String(forecastPeriodLabel).toUpperCase()}</div>
+        <div className="forecast-live"><i/> ПРОГНОЗ ТОО ГОТОВ <span>·</span> {String(forecastPeriodLabel).toUpperCase()}</div>
         <div className="forecast-command-value">
           <b>{mln(forecast.forecast_total_kwh)}</b>
           <span>млн<br/>кВт·ч</span>
@@ -2563,7 +2552,7 @@ function ForecastPage({ hasImports, consumersState, mappings, forecastReady, onO
             {forecastDeltaPositive ? <TrendingUp/> : <TrendingDown/>}
             {signedPercent(forecast.expected_change_pct)}
           </span>
-          <p>к {sourcePeriodLabel}. В расчёте учтены календарь, погода и заданные события.</p>
+          <p>к {sourcePeriodLabel}. Основной прогноз рассчитан только на объём ТОО «Казахойл Актобе», без субпотребителей.</p>
         </div>
       </div>
       <div className="forecast-command-side">
@@ -2589,19 +2578,10 @@ function ForecastPage({ hasImports, consumersState, mappings, forecastReady, onO
     <section className="forecast-scope" aria-label="Область прогноза">
       <div className="forecast-scope-label">
         <Filter/>
-        <div><small>ОБЪЕКТЫ В РАСЧЁТЕ</small><b>{selectedConsumerLabel}</b></div>
+        <div><small>ОБЪЁМ В ЗАЯВКЕ</small><b>Только ТОО «Казахойл Актобе»</b></div>
       </div>
-      <div className="forecast-scope-chips">
-        {consumers.map(item => {
-          const active = selectedConsumerIds.includes(item.id)
-          const region = WEATHER_REGIONS.find(candidate => candidate.id === mappingForConsumer(mappings, item))
-          return <button type="button" key={item.id} className={active ? 'active' : ''} onClick={() => toggleConsumer(item.id)} title={`${region?.name || 'Регион не указан'} · ${fmt(item.value)} кВт·ч`}>
-            <span>{item.name}</span>
-            {active && <Check/>}
-          </button>
-        })}
-      </div>
-      <button type="button" className="forecast-scope-reset" onClick={() => setSelectedConsumerIds([])} disabled={!selectedConsumerIds.length}>Сбросить выбор</button>
+      <p className="forecast-scope-note">Субпотребители не входят в прогноз покупной электроэнергии Компании и показаны ниже только справочно.</p>
+      <div className="forecast-scope-total"><small>Справочно с субпотребителями</small><b>{mln(forecast.controlled_forecast_total_kwh)} млн кВт·ч</b></div>
     </section>
 
     <section className="forecast-signal-strip" aria-label="Ключевые факторы прогноза">
@@ -2642,7 +2622,7 @@ function ForecastPage({ hasImports, consumersState, mappings, forecastReady, onO
         <ForecastChartLegend/>
         <div className="load-signal-summary wide">
           <div><small>ОЖИДАЕМЫЙ ДИАПАЗОН</small><b>{mln(forecast.forecast_low_kwh)}–{mln(forecast.forecast_high_kwh)} млн кВт·ч</b></div>
-          <p>Прогноз согласован с техбалансом. Красным отмечены дни с аномальной погодой; наведите на дату, чтобы увидеть вклад факторов.</p>
+          <p>Прогноз согласован с техбалансом по объёму ТОО Казахойл Актобе. Красным отмечены дни с аномальной погодой; наведите на дату, чтобы увидеть вклад факторов.</p>
         </div>
       </Card> : <Card
         className="monthly-plan-card forecast-main-chart"
@@ -2715,23 +2695,31 @@ function ForecastPage({ hasImports, consumersState, mappings, forecastReady, onO
         <div className="forecast-driver-list">
           {(forecast.drivers || []).map(item => <div key={item.label}>
             <span>{item.label}</span>
-            <b>{typeof item.value === 'number' ? (Math.abs(item.value) < 1 ? signedPercent(item.value) : fmt(item.value)) : item.value}</b>
+            <b>{typeof item.value === 'number' ? (item.label === 'Субпотребители исключены' ? percent(item.value) : Math.abs(item.value) < 1 ? signedPercent(item.value) : fmt(item.value)) : item.value}</b>
           </div>)}
         </div>
       </Card>
     </div>
 
     <section className="forecast-breakdown-grid" aria-label="Структура прогноза">
-      <Card title="Казахойл и внешние потребители" subtitle="Разделение базового прогноза по границе техбаланса">
+      <Card className="forecast-stations-card" title="ТОО и субпотребители" subtitle="Основной прогноз покупки — только ТОО; субпотребители показаны справочно">
         <div className="forecast-segment-list">
           {(forecast.segments || []).map((item, index) => <div key={item.id}>
             <span style={{ '--segment-color': chartPalette[index % chartPalette.length] }}><i/></span>
-            <div><b>{item.name}</b><small>{percent(item.share)} прогноза</small></div>
+            <div><b>{item.name}</b><small>{item.included_in_purchase_forecast ? 'входит в прогноз покупки' : 'справочно, не входит в заявку'} · {percent(item.share)} баланса</small></div>
             <strong>{mln(item.value)} <small>млн кВт·ч</small></strong>
           </div>)}
         </div>
       </Card>
-      <Card title="Прогноз по подстанциям" subtitle="Внешнее потребление, распределённое по последнему техбалансу">
+      <Card className="forecast-stations-card" title="Станции прогноза ТОО" subtitle="Распознанные точки Казахойл Актобе из ежедневной сводки; внешние линии исключены">
+        {(forecast.forecast_stations || []).length ? <div className="forecast-substation-list">
+          {forecast.forecast_stations.map(item => <div key={item.id}>
+              <span><b>{item.name}</b><small>{item.site === 'kozhasai' ? 'Кожасай' : 'Алибекмола'} · {item.has_daily_profile ? `профиль ${sourcePeriodLabel}` : `нет данных за ${sourcePeriodLabel}`}</small></span>
+              <strong>{item.has_daily_profile ? mln(item.value) : '—'} <small>{item.has_daily_profile ? 'млн кВт·ч' : 'нет данных'}</small></strong>
+            </div>)}
+        </div> : <EmptyState title="Станции не выделены" text="Прогноз построен по общей ежедневной истории и масштабирован на объём ТОО."/>}
+      </Card>
+      <Card className="forecast-stations-card" title="Субпотребители по подстанциям" subtitle="Справочный внешний объём, не входящий в прогноз покупки ТОО">
         <div className="forecast-substation-list">
           {(forecast.substations || []).map(item => <div key={item.id}>
             <span><b>{item.name}</b><small>{percent(item.share)} внешнего потребления</small></span>
@@ -3840,7 +3828,7 @@ function AppShell({ dark, setDark }) {
   ])
   const consumersState = useConsumersState(hasConsumerData)
   const [consumerMappings, setConsumerMappings] = useConsumerMappings()
-  const forecastReady = hasConsumerData && consumersState.consumers.length > 0 && consumersState.consumers.every(item => mappingForConsumer(consumerMappings, item))
+  const forecastReady = hasConsumerData
   const backendState = importsState.loading ? 'pending' : importsState.error ? 'offline' : 'live'
 
   useEffect(() => {
@@ -3939,7 +3927,7 @@ function AppShell({ dark, setDark }) {
     dailyConsumption: maybeBlockAnalytics('dailyConsumption', <SourceDashboard kind="daily" hasImports={hasDailyData} onOpenQuality={()=>setPage('quality')}/>),
     peaks: maybeBlockAnalytics('peaks', <PeaksAndAnomaliesPage hasImports={hasDailyData}/>),
     consumers: maybeBlockAnalytics('consumers', <ConsumersPage hasImports={hasConsumerData} consumersState={consumersState} mappings={consumerMappings} setMappings={setConsumerMappings}/>),
-    forecast: maybeBlockAnalytics('forecast', <ForecastPage hasImports={hasConsumerData} consumersState={consumersState} mappings={consumerMappings} forecastReady={forecastReady} onOpenConsumers={()=>setPage('consumers')} onOpenUpload={openUploadPicker}/>),
+    forecast: maybeBlockAnalytics('forecast', <ForecastPage hasImports={hasConsumerData} forecastReady={forecastReady} onOpenUpload={openUploadPicker}/>),
     reconciliation: maybeBlockAnalytics('reconciliation', <ReconciliationPage importsState={importsState} onOpenQuality={()=>setPage('quality')}/>),
     quality: <Quality
       importsState={importsState}

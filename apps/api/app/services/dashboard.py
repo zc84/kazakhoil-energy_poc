@@ -369,6 +369,7 @@ def _catalog_breakdown(
             "id": point.code,
             "name": point.name,
             "site": point.site,
+            "ownership": point.ownership,
             "value": catalog_totals.get(point.code, 0.0),
             "resolved": point.code in catalog_totals,
             "sources": sorted(catalog_sources.get(point.code, []), key=lambda item: item["value"], reverse=True),
@@ -381,6 +382,7 @@ def _catalog_breakdown(
                 "id": energy_catalog.UNRESOLVED_ID,
                 "name": energy_catalog.UNRESOLVED_NAME,
                 "site": "unknown",
+                "ownership": "unknown",
                 "value": unresolved_total,
                 "resolved": False,
                 "sources": sorted(unresolved_sources, key=lambda item: item["value"], reverse=True),
@@ -435,6 +437,66 @@ def _daily_load_id(cells: list[object], label: str) -> str:
         channel = "reactive" if "реактив" in label.casefold() else "active"
         return f"daily-meter-{_slug(meter_number)}-{channel}"
     return f"daily-load-{_slug(label)}"
+
+
+def _point_by_code(points: list[object], code: str) -> object | None:
+    return next((point for point in points if getattr(point, "code", None) == code), None)
+
+
+def _resolve_daily_catalog_point(
+    points: list[object],
+    active_substation: str | None,
+    label: str,
+) -> object | None:
+    normalized_label = energy_catalog.normalize_title(label)
+    compact_label = re.sub(r"[^a-zа-я0-9]+", "", normalized_label)
+    explicit_rules = [
+        ("alibekmola-bkns", ("бкнс ввод", "бкнсввод")),
+        ("alibekmola-cpng", ("рп-1-1", "рп-1-2", "рп11", "рп12")),
+        ("alibekmola-gazzavod-rp", ("рп-6 газзавод", "рп 6 газзавод", "рп-6 кв газзавод")),
+        ("alibekmola-gazzavod-ps", ("газзавод алибекмола", "пс газзавод", "пс-газзавод")),
+        ("kozhasai-nasosnaya", ("нас.перекачки", "нас перекачки", "насосная перекачки")),
+    ]
+    for code, markers in explicit_rules:
+        if any(marker in normalized_label or marker in compact_label for marker in markers):
+            point = _point_by_code(points, code)
+            if point is not None:
+                return point
+
+    return (
+        energy_catalog.resolve_title_against(points, label)
+        or energy_catalog.resolve_title_against(points, active_substation or "")
+    )
+
+
+def _is_external_daily_load(label: str, meter_number: str | None, external_meters: set[str]) -> bool:
+    if meter_number and meter_number in external_meters:
+        return True
+    normalized = energy_catalog.normalize_title(label)
+    compact = re.sub(r"[^a-zа-я0-9]+", "", normalized)
+    external_markers = (
+        "тоо ",
+        "тоо\"",
+        "ип ",
+        "кх ",
+        "каспий нефть",
+        "касп.нефть",
+        "казтрансойл",
+        "gas processing",
+        "gasproces",
+        "gasprosc",
+        "gasproc",
+        "синопэк",
+        "sinопэк",
+        "кар-тел",
+        "картел",
+        "gsm",
+        "казахтелеком",
+        "теле2",
+        "мобтел",
+    )
+    compact_markers = ("тоогas", "тоокар", "каспнефть", "казтрансойл", "gasproces", "gasproc")
+    return any(marker in normalized for marker in external_markers) or any(marker in compact for marker in compact_markers)
 
 
 def _add_month(period: str) -> tuple[int, int, str]:
@@ -553,12 +615,12 @@ def _fit_weather_model(
     }
 
 
-def _monthly_backtest(monthly_series: list[dict[str, object]]) -> dict[str, object]:
+def _monthly_backtest(monthly_series: list[dict[str, object]], value_key: str = "total_kwh") -> dict[str, object]:
     errors: list[float] = []
     points: list[dict[str, object]] = []
     for previous, actual in zip(monthly_series, monthly_series[1:]):
-        previous_total = float(previous.get("total_kwh") or 0)
-        actual_total = float(actual.get("total_kwh") or 0)
+        previous_total = float(previous.get(value_key) if previous.get(value_key) is not None else previous.get("total_kwh") or 0)
+        actual_total = float(actual.get(value_key) if actual.get(value_key) is not None else actual.get("total_kwh") or 0)
         if previous_total <= 0 or actual_total <= 0:
             continue
         predicted = previous_total / _days_in_period(str(previous["period"])) * _days_in_period(str(actual["period"]))
@@ -609,6 +671,8 @@ def _build_energy_forecast(
     monthly_series: list[dict[str, object]],
     daily_by_period: dict[str, list[dict[str, object]]],
     *,
+    company_daily_by_period: dict[str, list[dict[str, object]]] | None = None,
+    forecast_stations_by_period: dict[str, list[dict[str, object]]] | None = None,
     adjustments: list[dict[str, object]] | None = None,
     with_weather: bool = False,
     weather_locations: list[dict[str, object]] | None = None,
@@ -618,6 +682,8 @@ def _build_energy_forecast(
             {
                 "period": period,
                 "total_kwh": sum(float(item.get("value") or 0) for item in points),
+                "own_kwh": sum(float(item.get("value") or 0) for item in points),
+                "external_kwh": 0.0,
                 "own_share": 1.0,
                 "external_share": 0.0,
             }
@@ -645,28 +711,94 @@ def _build_energy_forecast(
     forecast_year, forecast_month, forecast_period = _add_month(source_period)
     source_days = _days_in_period(source_period)
     forecast_days = monthrange(forecast_year, forecast_month)[1]
-    latest_total = float(latest.get("total_kwh") or 0)
-    latest_own_share = float(latest.get("own_share") or 0)
-    latest_external_share = float(latest.get("external_share") or 0)
+    latest_controlled_total = float(latest.get("total_kwh") or 0)
+    latest_external = float(latest.get("external_kwh") or 0)
+    latest_own = float(latest.get("own_kwh") or 0)
+    if latest_own <= 0 and latest_controlled_total > 0:
+        latest_own = max(0.0, latest_controlled_total - latest_external)
+    latest_total = latest_own
+    latest_own_share = latest_own / latest_controlled_total if latest_controlled_total else float(latest.get("own_share") or 1)
+    latest_external_share = latest_external / latest_controlled_total if latest_controlled_total else float(latest.get("external_share") or 0)
+
+    def monthly_value(item: dict[str, object], key: str) -> float:
+        value = item.get(key)
+        if value is None and key == "own_kwh":
+            total = float(item.get("total_kwh") or 0)
+            external = float(item.get("external_kwh") or 0)
+            value = max(0.0, total - external)
+        if value is None:
+            value = item.get("total_kwh") if key == "own_kwh" else 0
+        return float(value or 0)
+
+    def bounded_trend(rates: list[float]) -> float:
+        recent = rates[-3:]
+        if len(recent) >= 2:
+            weights = [0.25, 0.35, 0.4][-len(recent):]
+            rate = sum(item * weight for item, weight in zip(recent, weights)) / sum(weights)
+        else:
+            rate = recent[-1] if recent else 0.0
+        return _clamp(rate, -0.15, 0.15)
 
     month_rates: list[float] = []
+    external_month_rates: list[float] = []
     for current, previous in zip(monthly_series[1:], monthly_series):
-        current_value = float(current.get("total_kwh") or 0)
-        previous_value = float(previous.get("total_kwh") or 0)
+        current_value = monthly_value(current, "own_kwh")
+        previous_value = monthly_value(previous, "own_kwh")
         if previous_value > 0:
             month_rates.append((current_value - previous_value) / previous_value)
-    recent_rates = month_rates[-3:]
-    if len(recent_rates) >= 2:
-        weights = [0.25, 0.35, 0.4][-len(recent_rates):]
-        trend_rate = sum(rate * weight for rate, weight in zip(recent_rates, weights)) / sum(weights)
-    else:
-        trend_rate = recent_rates[-1] if recent_rates else 0.0
-    trend_rate = _clamp(trend_rate, -0.15, 0.15)
+        current_external = monthly_value(current, "external_kwh")
+        previous_external = monthly_value(previous, "external_kwh")
+        if previous_external > 0:
+            external_month_rates.append((current_external - previous_external) / previous_external)
+    trend_rate = bounded_trend(month_rates)
+    external_trend_rate = bounded_trend(external_month_rates)
 
-    source_daily = list(daily_by_period.get(source_period, []))
+    share_by_period: dict[str, float] = {}
+    for item in monthly_series:
+        period = str(item.get("period") or "")
+        controlled_total = float(item.get("total_kwh") or 0)
+        own_value = monthly_value(item, "own_kwh")
+        share_by_period[period] = own_value / controlled_total if controlled_total else float(item.get("own_share") or 1)
+
+    def company_daily_point(item: dict[str, object]) -> dict[str, object]:
+        period = str(item.get("period") or str(item.get("date") or "")[:7])
+        controlled_value = float(item.get("value") or 0)
+        return {
+            **item,
+            "value": controlled_value * share_by_period.get(period, latest_own_share),
+            "controlled_value": controlled_value,
+        }
+
+    requested_company_daily_by_period = company_daily_by_period or {}
+    has_station_daily_profile = any(
+        float(item.get("value") or 0) > 0
+        for points in requested_company_daily_by_period.values()
+        for item in points
+    )
+    if has_station_daily_profile:
+        company_daily_by_period = {
+            period: [
+                {
+                    **item,
+                    "controlled_value": float(item.get("controlled_value") or 0),
+                    "value": float(item.get("value") or 0),
+                }
+                for item in points
+            ]
+            for period, points in requested_company_daily_by_period.items()
+        }
+        daily_profile_basis = "catalog_koa_stations"
+    else:
+        company_daily_by_period = {
+            period: [company_daily_point(item) for item in points]
+            for period, points in daily_by_period.items()
+        }
+        daily_profile_basis = "controlled_inputs_scaled_to_koa"
+
+    source_daily = list(company_daily_by_period.get(source_period, []))
     if not source_daily:
-        latest_daily_period = max(daily_by_period.keys(), default="")
-        source_daily = list(daily_by_period.get(latest_daily_period, []))
+        latest_daily_period = max(company_daily_by_period.keys(), default="")
+        source_daily = list(company_daily_by_period.get(latest_daily_period, []))
     source_daily.sort(key=lambda item: str(item["date"]))
     daily_values = [float(item.get("value") or 0) for item in source_daily if float(item.get("value") or 0) > 0]
     source_daily_total = sum(daily_values)
@@ -677,7 +809,7 @@ def _build_energy_forecast(
     baseline_total = max(0.0, latest_total * day_count_adjustment * (1 + trend_rate))
 
     weekday_values: dict[int, list[float]] = defaultdict(list)
-    for period_points in daily_by_period.values():
+    for period_points in company_daily_by_period.values():
         for item in period_points:
             item_date = date.fromisoformat(str(item["date"]))
             value = float(item.get("value") or 0)
@@ -701,7 +833,7 @@ def _build_energy_forecast(
         "forecast": {},
         "history": {},
     }
-    all_daily = [item for points in daily_by_period.values() for item in points]
+    all_daily = [item for points in company_daily_by_period.values() for item in points]
     if with_weather and all_daily:
         settings = get_settings()
         history_dates = [date.fromisoformat(str(item["date"])) for item in all_daily]
@@ -801,7 +933,7 @@ def _build_energy_forecast(
 
     weather_history = weather_context.get("history") or {}
     weather_forecast = weather_context.get("forecast") or {}
-    weather_model = _fit_weather_model(daily_by_period, weather_history)
+    weather_model = _fit_weather_model(company_daily_by_period, weather_history)
     history_daily_mean = source_daily_avg or (_mean([float(item.get("value") or 0) for item in all_daily]) if all_daily else 0)
     model_daily_mean = baseline_total / forecast_days if forecast_days else 0
     boundary_scale = model_daily_mean / history_daily_mean if history_daily_mean else 1.0
@@ -817,7 +949,7 @@ def _build_energy_forecast(
                 "date": item_date,
                 "phase": "actual",
                 "actual": metered_value * source_boundary_scale,
-                "actual_metered": metered_value,
+                "actual_metered": float(item.get("controlled_value") or 0),
                 "temperature": weather.get("temperature_2m_mean"),
                 "temperature_actual": weather.get("temperature_2m_mean"),
                 "temperature_forecast": None,
@@ -888,7 +1020,9 @@ def _build_energy_forecast(
         )
 
     forecast_total = sum(float(item["value"]) for item in forecast_series)
-    backtest = _monthly_backtest(monthly_series)
+    external_forecast_total = max(0.0, latest_external * day_count_adjustment * (1 + external_trend_rate))
+    controlled_forecast_total = forecast_total + external_forecast_total
+    backtest = _monthly_backtest(monthly_series, "own_kwh")
     backtest_mape = backtest.get("mape")
     range_pct = _clamp(
         0.045
@@ -923,7 +1057,12 @@ def _build_energy_forecast(
         "period": forecast_period,
         "source_period": source_period,
         "source_days": source_days_count,
+        "forecast_scope": "koa_only",
+        "forecast_scope_label": "ТОО Казахойл Актобе",
+        "daily_profile_basis": daily_profile_basis,
         "source_total_kwh": latest_total,
+        "source_controlled_total_kwh": latest_controlled_total,
+        "source_external_kwh": latest_external,
         "forecast_total_kwh": forecast_total,
         "forecast_low_kwh": low_total,
         "forecast_high_kwh": high_total,
@@ -931,14 +1070,16 @@ def _build_energy_forecast(
         "trend_rate": trend_rate,
         "day_count_adjustment": day_count_adjustment,
         "confidence": confidence,
-        "own_kwh": forecast_total * latest_own_share,
-        "external_kwh": forecast_total * latest_external_share,
+        "own_kwh": forecast_total,
+        "external_kwh": external_forecast_total,
         "own_share": latest_own_share,
         "external_share": latest_external_share,
+        "controlled_forecast_total_kwh": controlled_forecast_total,
         "baseline_total_kwh": baseline_total,
         "weather_effect_kwh": weather_effect_total,
         "event_effect_kwh": event_effect_total,
-        "daily_controlled_total_kwh": forecast_total,
+        "daily_purchase_total_kwh": forecast_total,
+        "daily_controlled_total_kwh": controlled_forecast_total,
         "backtest": backtest,
         "weather": {
             "status": weather_context.get("status"),
@@ -950,6 +1091,7 @@ def _build_energy_forecast(
             "history_anomaly_days": sum(1 for item in history_series if item["weather_anomaly"]),
         },
         "adjustments": adjustments,
+        "forecast_stations": (forecast_stations_by_period or {}).get(source_period, []),
         "history_series": history_series,
         "combined_series": [*history_series, *forecast_series],
         "series": forecast_series,
@@ -963,6 +1105,7 @@ def _build_energy_forecast(
             {"label": "Дней в прогнозе", "value": forecast_days},
             {"label": "Дней дневного профиля", "value": source_days_count},
             {"label": "Тренд", "value": trend_rate},
+            {"label": "Субпотребители исключены", "value": latest_external_share},
             {"label": "Погодная поправка", "value": weather_effect_total / baseline_total if baseline_total else 0},
             {"label": "События мощности", "value": event_effect_total / baseline_total if baseline_total else 0},
         ],
@@ -970,9 +1113,14 @@ def _build_energy_forecast(
             (
                 "База: суточная история по контрольным вводам; без техбаланса надёжность ограничена 75%."
                 if data_basis == "daily_summary"
-                else "База: последний техбаланс, число дней и взвешенный тренд последних месяцев с ограничением ±15%."
+                else "База: объём ТОО «Казахойл Актобе» из последнего техбаланса, число дней и взвешенный тренд собственных объёмов с ограничением ±15%."
             ),
-            "Календарь: профиль каждого дня недели строится по всей доступной ежедневной истории.",
+            (
+                "Календарь: профиль каждого дня недели строится по распознанным станциям ТОО из ежедневной сводки."
+                if daily_profile_basis == "catalog_koa_stations"
+                else "Календарь: профиль каждого дня недели строится по всей доступной ежедневной истории и масштабируется на долю ТОО за соответствующий месяц."
+            ),
+            "Граница прогноза: субпотребители не входят в основной прогноз покупки электроэнергии Компании и показываются только справочно.",
             "Погода: модель градусо-дней оценивает чувствительность нагрузки к холоду и жаре; будущая температура поступает из Open-Meteo.",
             "Сценарий: остановки, ввод и снижение мощности дают датированный эффект мощность × 24 ч × загрузка.",
             "Надёжность: средняя ошибка на исторических данных определяет ширину прогнозного диапазона.",
@@ -1196,11 +1344,28 @@ def build_energy_business_dashboard(
         }
 
     monthly_series.sort(key=lambda item: str(item["period"]))
+    external_meters_by_period = {
+        period: {
+            str(item.get("meter_number"))
+            for item in details.get("external_rows", [])
+            if item.get("meter_number")
+        }
+        for period, details in technical_details.items()
+    }
 
     daily_series: list[dict[str, object]] = []
     daily_loads_by_period: dict[str, dict[str, dict[str, object]]] = defaultdict(dict)
+    forecast_daily_by_period: dict[str, dict[str, dict[str, object]]] = defaultdict(dict)
+    forecast_station_totals_by_period: dict[str, dict[str, dict[str, object]]] = defaultdict(dict)
+    active_catalog_points_by_period: dict[str, list[object]] = {}
     negative_intervals = 0
     incomplete_intervals = 0
+    def catalog_points_for_period(period: str) -> list[object]:
+        if period not in active_catalog_points_by_period:
+            period_start, period_end = _period_bounds(period)
+            active_catalog_points_by_period[period] = energy_catalog.active_points(db, period_start, period_end)
+        return active_catalog_points_by_period[period]
+
     for batch in daily_batches:
         period_info = period_info_from_batch(batch)
         if period_info is None:
@@ -1228,6 +1393,10 @@ def build_energy_business_dashboard(
             for _, cells in rows:
                 label = _label(cells)
                 meter_number = _normalize_meter_number(cells[2] if len(cells) > 2 else None)
+                title = _daily_row_title(cells)
+                if title:
+                    active_substation = title
+                    continue
                 if _is_daily_load_section_end(label):
                     in_load_section = False
                     continue
@@ -1278,6 +1447,55 @@ def build_energy_business_dashboard(
                     load["value"] = float(load["value"]) + value
                     load["days"] = int(load["days"]) + 1
 
+                    resolved_point = _resolve_daily_catalog_point(catalog_points_for_period(period), active_substation, label)
+                    if (
+                        resolved_point is not None
+                        and resolved_point.ownership == "koa"
+                        and not _is_external_daily_load(label, meter_number, external_meters_by_period.get(period, set()))
+                    ):
+                        day_key = sheet_date.isoformat()
+                        forecast_day = forecast_daily_by_period[period].setdefault(
+                            day_key,
+                            {
+                                "date": day_key,
+                                "period": period,
+                                "value": 0.0,
+                                "controlled_value": controlled_total,
+                                "stations": [],
+                                "profile_source": "daily_catalog_koa_stations",
+                            },
+                        )
+                        forecast_day["value"] = float(forecast_day["value"]) + value
+                        forecast_day["controlled_value"] = controlled_total
+                        station = forecast_station_totals_by_period[period].setdefault(
+                            resolved_point.code,
+                            {
+                                "id": resolved_point.code,
+                                "name": resolved_point.name,
+                                "site": resolved_point.site,
+                                "ownership": resolved_point.ownership,
+                                "value": 0.0,
+                            },
+                        )
+                        station["value"] = float(station["value"]) + value
+                        day_stations = forecast_day.setdefault("stations", [])
+                        station_day = next(
+                            (item for item in day_stations if item["id"] == resolved_point.code),
+                            None,
+                        )
+                        if station_day is None:
+                            day_stations.append(
+                                {
+                                    "id": resolved_point.code,
+                                    "name": resolved_point.name,
+                                    "site": resolved_point.site,
+                                    "ownership": resolved_point.ownership,
+                                    "value": value,
+                                }
+                            )
+                        else:
+                            station_day["value"] = float(station_day["value"]) + value
+
             daily_series.append(
                 {
                     "date": sheet_date.isoformat(),
@@ -1292,9 +1510,35 @@ def build_energy_business_dashboard(
     daily_by_period: dict[str, list[dict[str, object]]] = defaultdict(list)
     for point in daily_series:
         daily_by_period[str(point["period"])].append(point)
+    forecast_daily_series_by_period = {
+        period: sorted(days.values(), key=lambda item: str(item["date"]))
+        for period, days in forecast_daily_by_period.items()
+    }
+    forecast_periods = {
+        str(item.get("period"))
+        for item in monthly_series
+        if item.get("period")
+    } | set(daily_by_period.keys()) | set(forecast_station_totals_by_period.keys())
+    forecast_stations_by_period: dict[str, list[dict[str, object]]] = {}
+    for period in forecast_periods:
+        station_totals = forecast_station_totals_by_period.get(period, {})
+        forecast_stations_by_period[period] = [
+            {
+                "id": point.code,
+                "name": point.name,
+                "site": point.site,
+                "ownership": point.ownership,
+                "value": float(station_totals.get(point.code, {}).get("value") or 0),
+                "has_daily_profile": point.code in station_totals,
+            }
+            for point in catalog_points_for_period(period)
+            if point.ownership == "koa"
+        ]
     forecast = _build_energy_forecast(
         monthly_series,
         daily_by_period,
+        company_daily_by_period=forecast_daily_series_by_period,
+        forecast_stations_by_period=forecast_stations_by_period,
         adjustments=forecast_adjustments,
         with_weather=forecast_with_weather,
         weather_locations=forecast_weather_locations,
@@ -1360,18 +1604,21 @@ def build_energy_business_dashboard(
         forecast_total = float(forecast.get("forecast_total_kwh") or 0)
         forecast_own = float(forecast.get("own_kwh") or 0)
         forecast_external = float(forecast.get("external_kwh") or 0)
+        forecast_controlled_total = float(forecast.get("controlled_forecast_total_kwh") or (forecast_own + forecast_external))
         forecast["segments"] = [
             {
                 "id": "kazakhoil",
-                "name": "Казахойл",
+                "name": "ТОО Казахойл Актобе",
                 "value": forecast_own,
-                "share": forecast_own / forecast_total if forecast_total else 0,
+                "share": forecast_own / forecast_controlled_total if forecast_controlled_total else 0,
+                "included_in_purchase_forecast": True,
             },
             {
                 "id": "external",
-                "name": "Внешние потребители",
+                "name": "Субпотребители",
                 "value": forecast_external,
-                "share": forecast_external / forecast_total if forecast_total else 0,
+                "share": forecast_external / forecast_controlled_total if forecast_controlled_total else 0,
+                "included_in_purchase_forecast": False,
             },
         ]
         substation_basis = external_detail_total or latest_external
@@ -1597,6 +1844,8 @@ def build_daily_consumption_dashboard(db: Session, period: str | None = None) ->
     sheets = _rows_by_sheet(db, batch.id)
     period_info = period_info_from_batch(batch)
     resolved_period = period_info[0] if period_info else None
+    catalog_period_start, catalog_period_end = _period_bounds(resolved_period)
+    daily_catalog_points = energy_catalog.active_points(db, catalog_period_start, catalog_period_end)
     for sheet_name, rows in sheets.items():
         controlled_total = 0.0
         in_load_section = False
@@ -1619,6 +1868,7 @@ def build_daily_consumption_dashboard(db: Session, period: str | None = None) ->
                 controlled_total += value
             if not in_load_section or value is None or value <= 0 or not _is_daily_load_point(label):
                 continue
+            resolved_point = _resolve_daily_catalog_point(daily_catalog_points, active_substation, label)
             load_id = _daily_load_id(cells, label)
             load = loads.setdefault(
                 load_id,
@@ -1628,6 +1878,9 @@ def build_daily_consumption_dashboard(db: Session, period: str | None = None) ->
                     "meter_number": meter_number,
                     "meter_number_source": _meter_number_source(),
                     "substation": active_substation,
+                    "catalog_point_id": getattr(resolved_point, "code", None),
+                    "catalog_point_name": getattr(resolved_point, "name", None),
+                    "ownership": getattr(resolved_point, "ownership", None),
                     "value": 0.0,
                     "consumption_source": _consumption_source(),
                     "days": 0,
@@ -1640,9 +1893,10 @@ def build_daily_consumption_dashboard(db: Session, period: str | None = None) ->
     table = sorted(loads.values(), key=lambda item: float(item["value"]), reverse=True)
     substation_totals: dict[str, float] = defaultdict(float)
     for item in table:
-        if item.get("substation"):
+        if item.get("catalog_point_name"):
+            substation_totals[str(item["catalog_point_name"])] += float(item["value"])
+        elif item.get("substation"):
             substation_totals[str(item["substation"])] += float(item["value"])
-    catalog_period_start, catalog_period_end = _period_bounds(resolved_period)
     catalog_breakdown, catalog_resolved, catalog_total = _catalog_breakdown(
         db, catalog_period_start, catalog_period_end, substation_totals
     )

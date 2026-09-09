@@ -12,6 +12,7 @@ from sqlalchemy.pool import StaticPool
 from app.db import Base, get_db
 from app.main import app
 from app.models import DatasetKind, EnergyPoint, ImportBatch, ImportFile, ImportStatus, StagingRow, ValidationIssue, ValidationSeverity
+from app.services.dashboard import build_energy_business_dashboard
 from app.services.energy_catalog import seed_default_energy_points
 
 
@@ -144,18 +145,36 @@ class DashboardEndpointTests(unittest.TestCase):
                     batch_id=daily.id,
                     sheet_name="01.03",
                     row_index=1,
-                    raw_json=json.dumps(["Итого по вводам 6 кВ"]),
+                    raw_json=json.dumps(['ПС 35/6 "Северная"']),
                 ),
                 StagingRow(
                     batch_id=daily.id,
                     sheet_name="01.03",
                     row_index=2,
-                    raw_json=json.dumps(['Яч.212 "Каспий нефть-2"', "ARTM", 51555226, None, 10, 0, 2, 20]),
+                    raw_json=json.dumps(["Итого по вводам 6 кВ"]),
                 ),
                 StagingRow(
                     batch_id=daily.id,
                     sheet_name="01.03",
                     row_index=3,
+                    raw_json=json.dumps(['Яч.212 "АГЗУ Северная"', "ARTM", 51555226, None, 10, 0, 2, 20]),
+                ),
+                StagingRow(
+                    batch_id=daily.id,
+                    sheet_name="01.03",
+                    row_index=4,
+                    raw_json=json.dumps(["ПС-110/35/6 кВ Южный Жанажол"]),
+                ),
+                StagingRow(
+                    batch_id=daily.id,
+                    sheet_name="01.03",
+                    row_index=5,
+                    raw_json=json.dumps(['Яч.999 "Внешняя линия"', "ARTM", 51555999, None, 1, 0, 5, 5]),
+                ),
+                StagingRow(
+                    batch_id=daily.id,
+                    sheet_name="01.03",
+                    row_index=6,
                     raw_json=json.dumps(["Итого по отходящим линиям 6 кВ"]),
                 ),
             ]
@@ -339,8 +358,9 @@ class DashboardEndpointTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload["kpis"]["days"], 1)
-        self.assertEqual(payload["kpis"]["objects"], 1)
+        self.assertEqual(payload["kpis"]["objects"], 2)
         self.assertEqual(payload["table"][0]["meter_number"], "51555226")
+        self.assertEqual(payload["table"][0]["substation"], 'ПС 35/6 "Северная"')
         self.assertEqual(payload["table"][0]["meter_number_source"], "Столбец C")
         self.assertEqual(payload["table"][0]["consumption_source"], "Расчёт: (G - F) × E")
         self.assertEqual(payload["series"][0]["meter_number"], "51555226")
@@ -351,6 +371,38 @@ class DashboardEndpointTests(unittest.TestCase):
         payload = response.json()
         self.assertTrue(payload["data_quality"]["external_detail_complete"])
         self.assertEqual(payload["data_quality"]["external_detail_difference_kwh"], 0)
+
+    def test_forecast_purchase_scope_excludes_subconsumers(self) -> None:
+        with self.Session() as db:
+            payload = build_energy_business_dashboard(db)
+
+        forecast = payload["forecast"]
+        expected_own_forecast = 80 * 30 / 31
+        expected_external_forecast = 20 * 30 / 31
+
+        self.assertEqual(forecast["forecast_scope"], "koa_only")
+        self.assertEqual(forecast["daily_profile_basis"], "catalog_koa_stations")
+        self.assertAlmostEqual(forecast["source_total_kwh"], 80)
+        self.assertAlmostEqual(forecast["source_controlled_total_kwh"], 100)
+        self.assertAlmostEqual(forecast["source_external_kwh"], 20)
+        self.assertAlmostEqual(forecast["forecast_total_kwh"], expected_own_forecast)
+        self.assertAlmostEqual(forecast["own_kwh"], expected_own_forecast)
+        self.assertAlmostEqual(forecast["external_kwh"], expected_external_forecast)
+        self.assertAlmostEqual(
+            forecast["controlled_forecast_total_kwh"],
+            expected_own_forecast + expected_external_forecast,
+        )
+
+        segments = {item["id"]: item for item in forecast["segments"]}
+        self.assertTrue(segments["kazakhoil"]["included_in_purchase_forecast"])
+        self.assertFalse(segments["external"]["included_in_purchase_forecast"])
+        station_by_id = {item["id"]: item for item in forecast["forecast_stations"]}
+        self.assertEqual(len(forecast["forecast_stations"]), 10)
+        self.assertNotIn("external-yuzhny-zhanazhol", station_by_id)
+        self.assertAlmostEqual(station_by_id["alibekmola-sever"]["value"], 20.0)
+        self.assertTrue(station_by_id["alibekmola-sever"]["has_daily_profile"])
+        self.assertFalse(station_by_id["alibekmola-gazzavod-ps"]["has_daily_profile"])
+        self.assertEqual(station_by_id["alibekmola-gazzavod-ps"]["value"], 0.0)
 
     def test_delete_failed_import_removes_batch_and_raw_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
