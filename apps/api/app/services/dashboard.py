@@ -250,24 +250,11 @@ def _technical_financial_summary(
     rows: list[tuple[StagingRow, list[object]]],
 ) -> list[dict[str, object]]:
     summary: list[dict[str, object]] = []
-    empty_rows_after_start = 0
-    previous_row_index: int | None = None
     for row, cells in rows:
         if row.row_index < 4:
             continue
-        if previous_row_index is not None and row.row_index > previous_row_index + 1:
-            empty_rows_after_start += row.row_index - previous_row_index - 1
-            if empty_rows_after_start >= 5:
-                break
-        previous_row_index = row.row_index
         name = str(cells[12]).strip() if len(cells) > 12 and cells[12] not in (None, "") else ""
         value = _number(cells[13] if len(cells) > 13 else None)
-        if not name and value is None:
-            empty_rows_after_start += 1
-            if empty_rows_after_start >= 5:
-                break
-            continue
-        empty_rows_after_start = 0
         if not name or value is None:
             continue
         summary.append(

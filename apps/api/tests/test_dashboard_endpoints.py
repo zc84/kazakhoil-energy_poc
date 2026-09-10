@@ -210,7 +210,7 @@ class DashboardEndpointTests(unittest.TestCase):
                 {"id": "financial-12-ппн-удн-тыс-квт-ч", "row": 12, "name": "ППН, УДН тыс.кВт.ч.", "value": 214044.48},
             ],
         )
-        self.assertNotIn(294, {item["row"] for item in payload["financial_summary"]})
+        self.assertIn(294, {item["row"] for item in payload["financial_summary"]})
 
     def test_technical_balance_deduplicates_repeated_meter_rows(self) -> None:
         with self.Session() as db:
